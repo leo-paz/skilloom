@@ -2,7 +2,11 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ensureMachineId, resolveConfigPaths } from "../src/core/config.js";
+import {
+  ensureMachineId,
+  loadMachineId,
+  resolveConfigPaths,
+} from "../src/core/config.js";
 
 describe("configuration paths", () => {
   it("honors explicit and environment config paths", async () => {
@@ -23,6 +27,13 @@ describe("configuration paths", () => {
     const second = await ensureMachineId(join(root, "machine-id"));
     expect(second).toBe(first);
     expect(first).toMatch(/^[a-f0-9-]{36}$/);
+  });
+
+  it("does not create a machine identifier during a read", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skilloom-machine-"));
+    await expect(loadMachineId(join(root, "machine-id"))).rejects.toThrow(
+      /init/i,
+    );
   });
 
   it("uses a local locator for external configuration", async () => {

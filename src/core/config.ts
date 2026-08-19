@@ -69,6 +69,23 @@ export async function ensureMachineId(path: string): Promise<string> {
   return id;
 }
 
+export async function loadMachineId(path: string): Promise<string> {
+  try {
+    const value = (await readFile(path, "utf8")).trim();
+    if (!/^[a-f0-9-]{36}$/.test(value)) {
+      throw new Error(`invalid machine identifier in ${path}`);
+    }
+    return value;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        `machine identifier is missing; run skilloom init. Missing ${path}`,
+      );
+    }
+    throw error;
+  }
+}
+
 async function atomicWrite(path: string, content: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}`;

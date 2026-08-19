@@ -8,11 +8,18 @@ const identifier = z
   .max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must be a plain identifier");
 
+export function isValidSkillSource(value: string): boolean {
+  const local =
+    value.startsWith("/") || value.startsWith("./") || value.startsWith("../");
+  if (local) return value.length <= 2048 && /^[^\0\r\n]+$/.test(value);
+  return /^[A-Za-z0-9@._~:/+-]+$/.test(value) && value.length <= 2048;
+}
+
 const source = z
   .string()
   .min(1)
   .max(2048)
-  .regex(/^[A-Za-z0-9@._~:/+-]+$/, "source contains unsafe characters");
+  .refine(isValidSkillSource, "source contains unsafe characters");
 
 const skillSchema = z
   .object({
@@ -52,12 +59,6 @@ const storageSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.mode === "external" && !value.path) {
-      context.addIssue({
-        code: "custom",
-        message: "external storage requires path",
-      });
-    }
     if (value.mode === "managed" && !value.repository) {
       context.addIssue({
         code: "custom",

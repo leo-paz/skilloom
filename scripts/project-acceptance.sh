@@ -11,7 +11,7 @@ tarball_name=$(npm pack --silent | tail -n 1)
 tarball="$repository_root/$tarball_name"
 trap 'rm -rf "$acceptance_root"; rm -f "$tarball"' EXIT
 
-source_dir="$acceptance_root/source"
+source_dir="$acceptance_root/source with spaces;argv"
 project_dir="$acceptance_root/project"
 isolated_home="$acceptance_root/home"
 mkdir -p "$source_dir/review" "$source_dir/lint" "$project_dir" "$isolated_home/.codex"

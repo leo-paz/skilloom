@@ -42,8 +42,24 @@ export class GitAdapter {
   }
 
   async clone(repository: string, destination: string): Promise<void> {
-    if (/https?:\/\/[^/\s]*:[^@\s]+@/i.test(repository)) {
-      throw new Error("repository URL must not contain an access token");
+    if (/^https?:\/\//i.test(repository)) {
+      let parsed: URL;
+      try {
+        parsed = new URL(repository);
+      } catch {
+        throw new Error("repository URL is invalid");
+      }
+      if (
+        parsed.username ||
+        parsed.password ||
+        [...parsed.searchParams.keys()].some((key) =>
+          /(token|secret|password|key)/i.test(key),
+        )
+      ) {
+        throw new Error(
+          "repository URL must not contain credentials or access tokens",
+        );
+      }
     }
     await requireGit(["clone", repository, destination]);
   }

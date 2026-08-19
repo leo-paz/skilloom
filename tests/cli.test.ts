@@ -72,6 +72,21 @@ describe("CLI", () => {
     await runCli(["init", "--yes"], test.value);
     await setGlobalSkills(home, ["review"]);
     expect(await runCli(["plan", "--check", "--json"], test.value)).toBe(2);
+    const plan = JSON.parse(test.out.at(-1) ?? "{}");
+    expect(plan.operations[0].command).toEqual({
+      executable: "npx",
+      arguments: [
+        "skills",
+        "add",
+        "acme/skills",
+        "--skill",
+        "review",
+        "--agent",
+        "codex",
+        "--global",
+        "--yes",
+      ],
+    });
     expect(await runCli(["apply", "--yes", "--json"], test.value)).toBe(0);
     expect(test.out.some((line) => line.includes('"completed"'))).toBe(true);
   });
@@ -116,7 +131,9 @@ describe("CLI", () => {
     const test = runtime(home);
     await runCli(["init", "--yes"], test.value);
     await setGlobalSkills(home, ["review"]);
-    test.value.confirm = async () => false;
+    test.value.confirm = async () => {
+      throw new Error("non-TTY commands must not prompt");
+    };
     let mutations = 0;
     test.value.run = async (_executable, args) => {
       if (args.includes("list")) return { code: 0, stdout: "[]", stderr: "" };
@@ -125,5 +142,96 @@ describe("CLI", () => {
     };
     expect(await runCli(["apply", "--json"], test.value)).toBe(5);
     expect(mutations).toBe(0);
+  });
+
+  it("connects to an existing external config and assigns this machine", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
+    const externalPath = join(home, "shared.yaml");
+    await writeFile(
+      externalPath,
+      "version: 1\nstorage: { mode: external, path: /tmp/shared.yaml }\nprofiles:\n  work: { skills: [] }\nmachines: {}\n",
+    );
+    const test = runtime(home);
+    expect(
+      await runCli(
+        [
+          "init",
+          "--storage",
+          "external",
+          "--path",
+          externalPath,
+          "--profile",
+          "work",
+          "--json",
+        ],
+        test.value,
+      ),
+    ).toBe(0);
+    const machineId = (
+      await readFile(join(home, ".config", "skilloom", "machine-id"), "utf8")
+    ).trim();
+    expect(await readFile(externalPath, "utf8")).toContain(
+      `${machineId}:\n    profile: work`,
+    );
+  });
+
+  it("creates profiles, selects one, and edits the project manifest", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
+    const test = runtime(home);
+    await runCli(["init", "--yes"], test.value);
+    expect(await runCli(["config", "--add-profile", "work"], test.value)).toBe(
+      0,
+    );
+    expect(
+      await runCli(
+        [
+          "config",
+          "--add-skill",
+          "review",
+          "--source",
+          "acme/skills",
+          "--to-profile",
+          "work",
+          "--agent",
+          "codex",
+        ],
+        test.value,
+      ),
+    ).toBe(0);
+    expect(await runCli(["config", "--profile", "work"], test.value)).toBe(0);
+    expect(
+      await readFile(join(home, ".config", "skilloom", "config.yaml"), "utf8"),
+    ).toContain("name: review");
+
+    const project = await mkdtemp(join(tmpdir(), "skilloom-project-"));
+    await import("node:fs/promises").then(({ mkdir }) =>
+      mkdir(join(project, ".git"), { recursive: true }),
+    );
+    test.value.cwd = project;
+    await runCli(["project", "init"], test.value);
+    expect(
+      await runCli(
+        [
+          "project",
+          "add",
+          "--source",
+          "acme/skills",
+          "--skill",
+          "review",
+          "--agent",
+          "codex",
+        ],
+        test.value,
+      ),
+    ).toBe(0);
+    expect(await readFile(join(project, ".skilloom.yaml"), "utf8")).toContain(
+      "name: review",
+    );
+    expect(
+      await runCli(["project", "remove", "--skill", "review"], test.value),
+    ).toBe(0);
+    expect(
+      await readFile(join(project, ".skilloom.yaml"), "utf8"),
+    ).not.toContain("name: review");
   });
 });

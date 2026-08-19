@@ -1,6 +1,6 @@
 {
   "name": "skilloom",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Reconcile global and project Agent Skills through the skills CLI",
   "type": "module",
   "license": "MIT",

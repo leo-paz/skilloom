@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planChanges } from "../src/core/plan.js";
+import { managedStateKey, planChanges } from "../src/core/plan.js";
 import { resolveDesiredState } from "../src/core/resolve.js";
 import { parseProjectConfig, parseUserConfig } from "../src/core/schema.js";
 
@@ -29,6 +29,14 @@ describe("configuration schemas", () => {
         "version: 1\nskills:\n  - source: 'x; echo nope'\n    name: bad\n",
       ),
     ).toThrow(/source/i);
+  });
+
+  it("accepts local source paths with spaces and shell metacharacters", () => {
+    expect(
+      parseProjectConfig(
+        "version: 1\nskills:\n  - source: '/tmp/skill source;still-an-argv'\n    name: safe\n",
+      ).skills[0]?.source,
+    ).toBe("/tmp/skill source;still-an-argv");
   });
 
   it("rejects duplicate skills in one profile", () => {
@@ -89,7 +97,13 @@ describe("resolution and planning", () => {
         },
         { name: "manual", source: null, agents: ["codex"], scope: "project" },
       ],
-      new Set(["project:old"]),
+      new Set([
+        managedStateKey({
+          name: "old",
+          source: "acme/skills",
+          scope: "project",
+        }),
+      ]),
     );
     expect(operations.map((op) => `${op.kind}:${op.skill.name}`)).toEqual([
       "add:new",
@@ -123,5 +137,24 @@ describe("resolution and planning", () => {
         new Set(),
       ),
     ).toEqual([]);
+  });
+
+  it("does not remove a same-named skill replaced by the user or managed in another project", () => {
+    const installed = [
+      {
+        name: "review",
+        source: "personal/skills",
+        agents: ["codex"],
+        scope: "project" as const,
+      },
+    ];
+    const managed = new Set([
+      managedStateKey(
+        { name: "review", source: "acme/skills", scope: "project" },
+        "/repo-a",
+      ),
+    ]);
+    expect(planChanges([], installed, managed, "/repo-b")).toEqual([]);
+    expect(planChanges([], installed, managed, "/repo-a")).toEqual([]);
   });
 });

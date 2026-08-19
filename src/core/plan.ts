@@ -1,7 +1,15 @@
 import type { DesiredSkill, InstalledSkill, PlanOperation } from "./types.js";
 
-const managedKey = (skill: { scope: string; name: string }) =>
+const desiredKey = (skill: { scope: string; name: string }) =>
   `${skill.scope}:${skill.name}`;
+
+export function managedStateKey(
+  skill: { scope: string; name: string; source: string | null },
+  projectRoot?: string,
+): string {
+  if (skill.scope === "global") return `global:${skill.name}`;
+  return `project:${encodeURIComponent(projectRoot || "")}:${skill.name}:${encodeURIComponent(skill.source || "")}`;
+}
 
 function isSatisfied(
   desired: DesiredSkill,
@@ -19,6 +27,7 @@ export function planChanges(
   desired: DesiredSkill[],
   installed: InstalledSkill[],
   managed: ReadonlySet<string>,
+  projectRoot?: string,
 ): PlanOperation[] {
   const operations: PlanOperation[] = [];
   for (const skill of desired) {
@@ -26,10 +35,10 @@ export function planChanges(
       operations.push({ kind: "add", skill, reasons: skill.reasons });
     }
   }
-  const desiredKeys = new Set(desired.map(managedKey));
+  const desiredKeys = new Set(desired.map(desiredKey));
   for (const skill of installed) {
-    const key = managedKey(skill);
-    if (managed.has(key) && !desiredKeys.has(key)) {
+    const stateKey = managedStateKey(skill, projectRoot);
+    if (managed.has(stateKey) && !desiredKeys.has(desiredKey(skill))) {
       operations.push({
         kind: "remove",
         skill,

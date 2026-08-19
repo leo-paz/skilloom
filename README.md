@@ -63,6 +63,15 @@ projects: {}
 
 `skilloom config` prints the active path and machine assignment. `skilloom config --profile NAME` changes the assignment to an existing global profile.
 
+Profile and skill edits also have noninteractive forms:
+
+```sh
+skilloom config --add-profile work
+skilloom config --add-skill review --source acme/skills --to-profile work --agent codex
+skilloom config --remove-skill review --from-profile work
+skilloom config --remove-profile work
+```
+
 ## Project configuration
 
 Commit `.skilloom.yaml` with the repository:
@@ -77,6 +86,13 @@ skills:
 ```
 
 Project policy is additive. A project cannot hide a global skill. Skilloom removes a project skill only when its local state file records that Skilloom previously added it. Unrelated installations remain untouched.
+
+The guided menu can edit project requirements. Scripts can use the same service directly:
+
+```sh
+skilloom project add --source acme/agent-skills --skill repository-review --agent codex
+skilloom project remove --skill repository-review
+```
 
 Skilloom runs project-scoped `npx skills` commands at the Git repository root. The upstream CLI owns `.agents/skills` and `skills-lock.json`.
 
@@ -109,8 +125,8 @@ Managed mode refuses to pull over uncommitted changes. It never resets, force-pu
 - `apply` confirms, then runs safe `npx skills` argument arrays without a shell.
 - `status` reports convergence without the check exit code.
 - `update` delegates project and global updates to `npx skills update`.
-- `project init` writes an empty `.skilloom.yaml` in the current Git repository.
-- `config` reports paths and changes the current machine profile.
+- `project init` writes an empty `.skilloom.yaml` in the current Git repository. `project add` and `project remove` edit its skill list.
+- `config` reports paths, creates and removes profiles, edits profile skills, and changes the current machine profile.
 - `doctor` checks the runtime, Git, npx, skills, and configuration.
 
 All commands that return structured data support `--json`. Errors use `{ "ok": false, "error": { "code": "...", "message": "..." } }`.

@@ -3,13 +3,16 @@ import { dirname, join, resolve } from "node:path";
 import { defineCommand } from "citty";
 import { GitAdapter } from "../adapters/git.js";
 import {
+  commandForOperation,
   type ProcessRunner,
+  redactProcessOutput,
   runProcess,
   SkillsAdapter,
 } from "../adapters/skills.js";
 import {
   ensureMachineId,
   findProjectRoot,
+  loadMachineId,
   loadManagedState,
   loadProjectConfig,
   loadUserConfig,
@@ -19,8 +22,9 @@ import {
   saveUserConfig,
   writeLocator,
 } from "../core/config.js";
-import { planChanges } from "../core/plan.js";
+import { managedStateKey, planChanges } from "../core/plan.js";
 import { resolveDesiredState } from "../core/resolve.js";
+import { isValidSkillSource } from "../core/schema.js";
 import type { PlanOperation, UserConfig } from "../core/types.js";
 
 export interface CliRuntime {
@@ -33,7 +37,9 @@ export interface CliRuntime {
   confirm: (message: string) => Promise<boolean>;
 }
 
-const help = `Skilloom 0.1.0
+const version = "1.0.0";
+
+const help = `Skilloom ${version}
 
 Usage: skilloom <command> [options]
 
@@ -44,7 +50,9 @@ Commands:
   skilloom status           Show convergence status
   skilloom update           Update managed skills
   skilloom project init     Create .skilloom.yaml
-  skilloom config           Show or edit machine configuration
+  skilloom project add      Add a project requirement
+  skilloom project remove   Remove a project requirement
+  skilloom config           Manage profiles and machine selection
   skilloom doctor           Diagnose the local setup
 
 Common options:
@@ -57,7 +65,7 @@ Common options:
 export const commandContract = defineCommand({
   meta: {
     name: "skilloom",
-    version: "0.1.0",
+    version,
     description: "Reconcile Agent Skills through the skills CLI",
   },
   subCommands: Object.fromEntries(
@@ -87,6 +95,20 @@ function option(args: string[], name: string): string | undefined {
   return value;
 }
 
+function requireIdentifier(value: string, label: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
+    throw new Error(`${label} must be a plain identifier`);
+  }
+  return value;
+}
+
+function requireSource(value: string): string {
+  if (!isValidSkillSource(value)) {
+    throw new Error("source contains unsafe characters");
+  }
+  return value;
+}
+
 function emit(
   runtime: CliRuntime,
   json: boolean,
@@ -111,6 +133,7 @@ function emitError(
 }
 
 function operationJson(operation: PlanOperation): Record<string, unknown> {
+  const arguments_ = commandForOperation(operation);
   return {
     kind: operation.kind,
     scope: operation.skill.scope,
@@ -118,12 +141,18 @@ function operationJson(operation: PlanOperation): Record<string, unknown> {
     source: operation.skill.source,
     agents: operation.skill.agents,
     reasons: operation.reasons,
+    command: { executable: "npx", arguments: arguments_ },
   };
 }
 
 function operationText(operation: PlanOperation): string {
   const agents = operation.skill.agents.join(", ") || "all agents";
-  return `${operation.kind.toUpperCase()} ${operation.skill.scope} ${operation.skill.name} for ${agents}`;
+  const command = ["npx", ...commandForOperation(operation)]
+    .map((part) =>
+      /^[A-Za-z0-9@._~:/+-]+$/.test(part) ? part : JSON.stringify(part),
+    )
+    .join(" ");
+  return `${operation.kind.toUpperCase()} ${operation.skill.scope} ${operation.skill.name} for ${agents}\n  ${command}`;
 }
 
 async function maybePullManaged(
@@ -143,10 +172,11 @@ async function buildPlan(
   managed: Set<string>;
   statePath: string;
   cwd: string;
+  projectRoot?: string;
 }> {
   const paths = resolveConfigPaths(runtime.env, explicitPath);
-  const machineId = await ensureMachineId(paths.machineIdPath);
   let config = await loadUserConfig(paths.configPath);
+  const machineId = await loadMachineId(paths.machineIdPath);
   config = await maybePullManaged(config, paths.configPath);
   const projectRoot = findProjectRoot(runtime.cwd);
   const manifest = projectRoot
@@ -164,10 +194,16 @@ async function buildPlan(
     : [];
   const managed = await loadManagedState(paths.statePath);
   return {
-    operations: planChanges(desired, [...global, ...project], managed),
+    operations: planChanges(
+      desired,
+      [...global, ...project],
+      managed,
+      projectRoot,
+    ),
     managed,
     statePath: paths.statePath,
     cwd: projectRoot || runtime.cwd,
+    ...(projectRoot ? { projectRoot } : {}),
   };
 }
 
@@ -183,8 +219,10 @@ async function initialize(
   const basePaths = resolveConfigPaths(runtime.env, option(args, "--config"));
   let configPath = basePaths.configPath;
   let repository: string | undefined;
+  let existingManagedCheckout = false;
   if (storage === "external") {
     configPath = resolve(
+      runtime.cwd,
       option(args, "--path") ||
         (() => {
           throw new Error("external storage requires --path");
@@ -196,19 +234,53 @@ async function initialize(
     repository = option(args, "--repository");
     if (!repository) throw new Error("managed storage requires --repository");
     const checkout = join(basePaths.appDir, "repository");
-    if (!existsSync(checkout))
+    existingManagedCheckout = existsSync(checkout);
+    if (!existingManagedCheckout)
       await new GitAdapter().clone(repository, checkout);
     configPath = join(checkout, "config.yaml");
     await writeLocator(basePaths.locatorPath, configPath);
   }
-  if (existsSync(configPath) && !flag(args, "--force"))
-    throw new Error(`configuration already exists at ${configPath}`);
   const machineId = await ensureMachineId(basePaths.machineIdPath);
+  if (existsSync(configPath) && !flag(args, "--force")) {
+    if (storage === "local")
+      throw new Error(`configuration already exists at ${configPath}`);
+    if (storage === "managed" && existingManagedCheckout) {
+      await new GitAdapter().pull(dirname(configPath));
+    }
+    const existing = await loadUserConfig(configPath);
+    const profile =
+      option(args, "--profile") ||
+      (existing.profiles.default
+        ? "default"
+        : Object.keys(existing.profiles)[0]);
+    if (!profile || !existing.profiles[profile]) {
+      throw new Error("existing configuration has no selectable profile");
+    }
+    existing.storage = {
+      mode: storage as "external" | "managed",
+      ...(repository ? { repository } : {}),
+    };
+    existing.machines[machineId] = { profile };
+    await saveUserConfig(configPath, existing);
+    if (storage === "managed") {
+      await new GitAdapter().commitAndPush(
+        dirname(configPath),
+        `Connect machine ${machineId}`,
+      );
+    }
+    emit(
+      runtime,
+      json,
+      "init",
+      { configPath, machineId, storage, connected: true },
+      `Connected ${configPath}`,
+    );
+    return 0;
+  }
   const config: UserConfig = {
     version: 1,
     storage: {
       mode: storage as "local" | "external" | "managed",
-      ...(storage === "external" ? { path: configPath } : {}),
       ...(repository ? { repository } : {}),
     },
     profiles: { default: { skills: [] } },
@@ -269,6 +341,21 @@ async function apply(
     );
     return 0;
   }
+  if (!json) runtime.stdout(result.operations.map(operationText).join("\n"));
+  if (!flag(args, "--yes") && !runtime.isTTY) {
+    emit(
+      runtime,
+      json,
+      "apply",
+      {
+        completed: [],
+        pending: result.operations.map(operationJson),
+        canceled: true,
+      },
+      "Refusing to prompt outside a terminal. Pass --yes to apply.",
+    );
+    return 5;
+  }
   if (
     !flag(args, "--yes") &&
     !(await runtime.confirm(`Apply ${result.operations.length} operation(s)?`))
@@ -293,16 +380,25 @@ async function apply(
     if (!operation) continue;
     const execution = await adapter.execute(operation, result.cwd, runtime.env);
     if (execution.code !== 0) {
+      const stdout = redactProcessOutput(execution.stdout, runtime.env);
+      const stderr = redactProcessOutput(execution.stderr, runtime.env);
       const pending = result.operations.slice(index);
       const payload = {
         ok: false,
         error: {
           code: "execution_failed",
-          message: execution.stderr.trim() || `npx exited ${execution.code}`,
+          message: stderr.trim() || `npx exited ${execution.code}`,
         },
         completed: completed.map(operationJson),
         pending: pending.map(operationJson),
+        upstream: {
+          exitCode: execution.code,
+          stdout,
+          stderr,
+        },
       };
+      if (!json && stdout.trim()) runtime.stdout(stdout.trim());
+      if (!json && stderr.trim()) runtime.stderr(stderr.trim());
       runtime.stderr(
         json
           ? JSON.stringify(payload)
@@ -310,8 +406,12 @@ async function apply(
       );
       return 4;
     }
+    if (!json && execution.stdout.trim())
+      runtime.stdout(redactProcessOutput(execution.stdout, runtime.env).trim());
+    if (!json && execution.stderr.trim())
+      runtime.stderr(redactProcessOutput(execution.stderr, runtime.env).trim());
     completed.push(operation);
-    const key = `${operation.skill.scope}:${operation.skill.name}`;
+    const key = managedStateKey(operation.skill, result.projectRoot);
     if (operation.kind === "add") result.managed.add(key);
     else result.managed.delete(key);
     await saveManagedState(result.statePath, result.managed);
@@ -341,6 +441,52 @@ async function projectInit(
   return 0;
 }
 
+async function projectEdit(
+  command: "add" | "remove",
+  args: string[],
+  runtime: CliRuntime,
+  json: boolean,
+): Promise<number> {
+  const root = findProjectRoot(runtime.cwd);
+  if (!root)
+    throw new Error(`project ${command} must run inside a Git repository`);
+  const path = join(root, ".skilloom.yaml");
+  const manifest = await loadProjectConfig(path);
+  if (!manifest)
+    throw new Error(`run skilloom project init before project ${command}`);
+  const nameValue = option(args, "--skill");
+  if (!nameValue) throw new Error(`project ${command} requires --skill`);
+  const name = requireIdentifier(nameValue, "skill name");
+  if (command === "add") {
+    const sourceValue = option(args, "--source");
+    if (!sourceValue) throw new Error("project add requires --source");
+    const source = requireSource(sourceValue);
+    if (manifest.skills.some((skill) => skill.name === name)) {
+      throw new Error(`project skill ${name} already exists`);
+    }
+    const agent = requireIdentifier(
+      option(args, "--agent") || "codex",
+      "agent",
+    );
+    manifest.skills.push({ source, name, agents: [agent] });
+  } else {
+    const next = manifest.skills.filter((skill) => skill.name !== name);
+    if (next.length === manifest.skills.length) {
+      throw new Error(`project skill ${name} does not exist`);
+    }
+    manifest.skills = next;
+  }
+  await saveProjectConfig(path, manifest);
+  emit(
+    runtime,
+    json,
+    `project ${command}`,
+    { path, skill: name },
+    `${command === "add" ? "Added" : "Removed"} ${name} ${command === "add" ? "to" : "from"} ${path}`,
+  );
+  return 0;
+}
+
 async function configure(
   args: string[],
   runtime: CliRuntime,
@@ -348,17 +494,76 @@ async function configure(
 ): Promise<number> {
   const paths = resolveConfigPaths(runtime.env, option(args, "--config"));
   const machineId = await ensureMachineId(paths.machineIdPath);
-  const config = await loadUserConfig(paths.configPath);
+  let config = await loadUserConfig(paths.configPath);
+  config = await maybePullManaged(config, paths.configPath);
+  const addProfile = option(args, "--add-profile");
+  const removeProfile = option(args, "--remove-profile");
+  const addSkill = option(args, "--add-skill");
+  const removeSkill = option(args, "--remove-skill");
+  if (addProfile) {
+    const name = requireIdentifier(addProfile, "profile name");
+    if (config.profiles[name])
+      throw new Error(`profile ${name} already exists`);
+    config.profiles[name] = { skills: [] };
+  }
+  if (removeProfile) {
+    const name = requireIdentifier(removeProfile, "profile name");
+    if (!config.profiles[name])
+      throw new Error(`profile ${name} does not exist`);
+    if (
+      Object.values(config.machines).some((machine) => machine.profile === name)
+    ) {
+      throw new Error(`profile ${name} is assigned to a machine`);
+    }
+    delete config.profiles[name];
+  }
+  if (addSkill) {
+    const name = requireIdentifier(addSkill, "skill name");
+    const profileName = option(args, "--to-profile");
+    const sourceValue = option(args, "--source");
+    if (!profileName || !config.profiles[profileName]) {
+      throw new Error("config --add-skill requires an existing --to-profile");
+    }
+    if (!sourceValue) throw new Error("config --add-skill requires --source");
+    if (
+      config.profiles[profileName].skills.some((skill) => skill.name === name)
+    ) {
+      throw new Error(`profile ${profileName} already contains skill ${name}`);
+    }
+    config.profiles[profileName].skills.push({
+      source: requireSource(sourceValue),
+      name,
+      agents: [requireIdentifier(option(args, "--agent") || "codex", "agent")],
+    });
+  }
+  if (removeSkill) {
+    const name = requireIdentifier(removeSkill, "skill name");
+    const profileName = option(args, "--from-profile");
+    if (!profileName || !config.profiles[profileName]) {
+      throw new Error(
+        "config --remove-skill requires an existing --from-profile",
+      );
+    }
+    const next = config.profiles[profileName].skills.filter(
+      (skill) => skill.name !== name,
+    );
+    if (next.length === config.profiles[profileName].skills.length) {
+      throw new Error(`profile ${profileName} does not contain skill ${name}`);
+    }
+    config.profiles[profileName].skills = next;
+  }
   const profile = option(args, "--profile");
   if (profile) {
     if (!config.profiles[profile])
       throw new Error(`profile ${profile} does not exist`);
     config.machines[machineId] = { profile };
+  }
+  if (profile || addProfile || removeProfile || addSkill || removeSkill) {
     await saveUserConfig(paths.configPath, config);
     if (config.storage.mode === "managed") {
       await new GitAdapter().commitAndPush(
         dirname(paths.configPath),
-        `Assign machine ${machineId}`,
+        "Update Skilloom profiles",
       );
     }
   }
@@ -381,6 +586,16 @@ async function update(
   runtime: CliRuntime,
   json: boolean,
 ): Promise<number> {
+  if (!flag(args, "--yes") && !runtime.isTTY) {
+    emit(
+      runtime,
+      json,
+      "update",
+      { canceled: true },
+      "Refusing to prompt outside a terminal. Pass --yes to update.",
+    );
+    return 5;
+  }
   if (
     !flag(args, "--yes") &&
     !(await runtime.confirm("Update project and global skills?"))
@@ -395,7 +610,8 @@ async function update(
   const failure = results.find((result) => result.code !== 0);
   if (failure)
     throw new Error(
-      failure.stderr.trim() || `skills update exited ${failure.code}`,
+      redactProcessOutput(failure.stderr, runtime.env).trim() ||
+        `skills update exited ${failure.code}`,
     );
   emit(
     runtime,
@@ -471,7 +687,7 @@ export async function runCli(
   const json = flag(rawArgs, "--json");
   try {
     if (flag(rawArgs, "--version") || flag(rawArgs, "-v")) {
-      runtime.stdout("0.1.0");
+      runtime.stdout(version);
       return 0;
     }
     if (rawArgs.length === 0) {
@@ -497,6 +713,10 @@ export async function runCli(
       return await apply(rawArgs.slice(1), runtime, json);
     if (command === "project" && rawArgs[1] === "init")
       return await projectInit(rawArgs.slice(2), runtime, json);
+    if (command === "project" && rawArgs[1] === "add")
+      return await projectEdit("add", rawArgs.slice(2), runtime, json);
+    if (command === "project" && rawArgs[1] === "remove")
+      return await projectEdit("remove", rawArgs.slice(2), runtime, json);
     if (command === "config")
       return await configure(rawArgs.slice(1), runtime, json);
     if (command === "update")

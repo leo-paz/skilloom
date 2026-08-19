@@ -68,6 +68,20 @@ export interface ProcessResult {
   stderr: string;
 }
 
+export function redactProcessOutput(
+  output: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  let redacted = output;
+  for (const [name, value] of Object.entries(env)) {
+    if (!/(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)/i.test(name))
+      continue;
+    if (value && value.length >= 4)
+      redacted = redacted.replaceAll(value, "[REDACTED]");
+  }
+  return redacted;
+}
+
 export type ProcessRunner = (
   executable: string,
   args: string[],
@@ -114,7 +128,7 @@ export class SkillsAdapter {
     const result = await this.runner(this.executable, args, { cwd, env });
     if (result.code !== 0)
       throw new Error(
-        `skills list failed with exit ${result.code}: ${result.stderr.trim()}`,
+        `skills list failed with exit ${result.code}: ${redactProcessOutput(result.stderr, env).trim()}`,
       );
     return parseSkillsList(result.stdout);
   }
