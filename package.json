@@ -1,0 +1,46 @@
+{
+  "name": "skilloom",
+  "version": "0.1.0",
+  "description": "Reconcile global and project Agent Skills through the skills CLI",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leo-paz/skilloom.git"
+  },
+  "bin": {
+    "skilloom": "dist/index.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "check": "npm run test && npm run typecheck && npm run lint && npm run build",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "smoke": "bash scripts/package-smoke.sh",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "verify": "bash scripts/verify.sh"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.11.0",
+    "citty": "^0.1.6",
+    "yaml": "^2.8.1",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.0",
+    "@types/node": "^22.17.2",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
