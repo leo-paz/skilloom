@@ -10,6 +10,7 @@ function isSatisfied(
   if (desired.scope !== installed.scope || desired.name !== installed.name)
     return false;
   if (installed.source && desired.source !== installed.source) return false;
+  if (installed.agents.length === 0) return true;
   const installedAgents = new Set(installed.agents);
   return desired.agents.every((agent) => installedAgents.has(agent));
 }

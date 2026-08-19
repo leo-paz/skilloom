@@ -1,0 +1,14 @@
+version: 1
+storage:
+  mode: local
+profiles:
+  default:
+    skills:
+      - source: vercel-labs/agent-skills
+        name: web-design-guidelines
+        agents: [codex]
+machines:
+  replace-with-local-machine-id:
+    profile: default
+projectProfiles: {}
+projects: {}

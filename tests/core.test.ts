@@ -105,4 +105,23 @@ describe("resolution and planning", () => {
       planChanges(desired, [{ ...skill("same"), scope: "global" }], new Set()),
     ).toEqual([]);
   });
+
+  it("treats an upstream empty agent list as unknown linkage", () => {
+    const desired = [
+      { ...skill("same"), scope: "project" as const, reasons: ["manifest"] },
+    ];
+    expect(
+      planChanges(
+        desired,
+        [
+          {
+            ...skill("same"),
+            agents: [],
+            scope: "project",
+          },
+        ],
+        new Set(),
+      ),
+    ).toEqual([]);
+  });
 });
