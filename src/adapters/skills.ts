@@ -68,6 +68,10 @@ export interface ProcessResult {
   stderr: string;
 }
 
+export class SkillsExecutionError extends Error {
+  override readonly name = "SkillsExecutionError";
+}
+
 export function redactProcessOutput(
   output: string,
   env: NodeJS.ProcessEnv,
@@ -82,10 +86,17 @@ export function redactProcessOutput(
   return redacted;
 }
 
+export interface ProcessOptions {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
+}
+
 export type ProcessRunner = (
   executable: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv },
+  options: ProcessOptions,
 ) => Promise<ProcessResult>;
 
 export const runProcess: ProcessRunner = async (executable, args, options) =>
@@ -99,10 +110,14 @@ export const runProcess: ProcessRunner = async (executable, args, options) =>
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
+      const text = String(chunk);
+      stdout += text;
+      options.onStdout?.(text);
     });
     child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
+      const text = String(chunk);
+      stderr += text;
+      options.onStderr?.(text);
     });
     child.once("error", reject);
     child.once("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
@@ -125,9 +140,17 @@ export class SkillsAdapter {
       ...(scope === "global" ? ["--global"] : []),
       "--json",
     ];
-    const result = await this.runner(this.executable, args, { cwd, env });
+    let result: ProcessResult;
+    try {
+      result = await this.runner(this.executable, args, { cwd, env });
+    } catch (error) {
+      throw new SkillsExecutionError(
+        `skills list failed to start: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
     if (result.code !== 0)
-      throw new Error(
+      throw new SkillsExecutionError(
         `skills list failed with exit ${result.code}: ${redactProcessOutput(result.stderr, env).trim()}`,
       );
     return parseSkillsList(result.stdout);
@@ -137,11 +160,24 @@ export class SkillsAdapter {
     operation: PlanOperation,
     cwd: string,
     env: NodeJS.ProcessEnv = process.env,
+    output: Pick<ProcessOptions, "onStdout" | "onStderr"> = {},
   ): Promise<ProcessResult> {
-    return this.runner(this.executable, commandForOperation(operation), {
-      cwd,
-      env,
-    });
+    try {
+      return await this.runner(
+        this.executable,
+        commandForOperation(operation),
+        {
+          cwd,
+          env,
+          ...output,
+        },
+      );
+    } catch (error) {
+      throw new SkillsExecutionError(
+        `skills ${operation.kind} failed to start: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
   }
 
   async update(
@@ -149,18 +185,25 @@ export class SkillsAdapter {
     cwd: string,
     env: NodeJS.ProcessEnv = process.env,
   ): Promise<ProcessResult> {
-    return this.runner(
-      this.executable,
-      [
-        "skills",
-        "update",
-        scope === "global" ? "--global" : "--project",
-        "--yes",
-      ],
-      {
-        cwd,
-        env,
-      },
-    );
+    try {
+      return await this.runner(
+        this.executable,
+        [
+          "skills",
+          "update",
+          scope === "global" ? "--global" : "--project",
+          "--yes",
+        ],
+        {
+          cwd,
+          env,
+        },
+      );
+    } catch (error) {
+      throw new SkillsExecutionError(
+        `skills update failed to start: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
   }
 }

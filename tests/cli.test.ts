@@ -105,6 +105,23 @@ describe("CLI", () => {
     expect(JSON.parse(test.err.at(-1) ?? "{}")).toMatchObject({ ok: false });
   });
 
+  it("distinguishes upstream execution failures from invalid input", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
+    const test = runtime(home);
+    await runCli(["init", "--yes"], test.value);
+    test.value.run = async () => ({
+      code: 7,
+      stdout: "",
+      stderr: "upstream unavailable",
+    });
+
+    expect(await runCli(["plan", "--check", "--json"], test.value)).toBe(4);
+    expect(JSON.parse(test.err.at(-1) ?? "{}")).toMatchObject({
+      ok: false,
+      error: { code: "execution_failed" },
+    });
+  });
+
   it("records completed work and reports pending work after a partial failure", async () => {
     const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
     const test = runtime(home);
@@ -124,6 +141,32 @@ describe("CLI", () => {
     expect(
       await readFile(join(home, ".config", "skilloom", "state.json"), "utf8"),
     ).toContain("global:first");
+  });
+
+  it("streams interactive apply output without duplicating it", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
+    const test = runtime(home);
+    await runCli(["init", "--yes"], test.value);
+    await setGlobalSkills(home, ["review"]);
+    const streamed: string[] = [];
+    Object.assign(test.value, {
+      isTTY: true,
+      writeStdout: (chunk: string) => streamed.push(chunk),
+    });
+    test.value.run = async (_executable, args, options) => {
+      if (args.includes("list")) return { code: 0, stdout: "[]", stderr: "" };
+      const output = options as typeof options & {
+        onStdout?: (chunk: string) => void;
+      };
+      output.onStdout?.("installing review\n");
+      return { code: 0, stdout: "installing review\n", stderr: "" };
+    };
+
+    expect(await runCli(["apply", "--yes"], test.value)).toBe(0);
+    expect(streamed).toEqual(["installing review\n"]);
+    expect(
+      test.out.filter((line) => line.includes("installing review")),
+    ).toEqual([]);
   });
 
   it("does not mutate after cancellation", async () => {
@@ -233,5 +276,24 @@ describe("CLI", () => {
     expect(
       await readFile(join(project, ".skilloom.yaml"), "utf8"),
     ).not.toContain("name: review");
+  });
+
+  it("diagnoses project discovery and repository state", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
+    const test = runtime(home);
+    await runCli(["init", "--yes"], test.value);
+    const project = await mkdtemp(join(tmpdir(), "skilloom-project-"));
+    await import("node:fs/promises").then(({ mkdir }) =>
+      mkdir(join(project, ".git"), { recursive: true }),
+    );
+    test.value.cwd = project;
+
+    expect(await runCli(["doctor", "--json"], test.value)).toBe(0);
+    const checks = JSON.parse(test.out.at(-1) ?? "{}").checks as Array<{
+      name: string;
+    }>;
+    expect(checks.map((check) => check.name)).toEqual(
+      expect.arrayContaining(["project", "repository"]),
+    );
   });
 });

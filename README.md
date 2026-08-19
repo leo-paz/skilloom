@@ -127,7 +127,7 @@ Managed mode refuses to pull over uncommitted changes. It never resets, force-pu
 - `update` delegates project and global updates to `npx skills update`.
 - `project init` writes an empty `.skilloom.yaml` in the current Git repository. `project add` and `project remove` edit its skill list.
 - `config` reports paths, creates and removes profiles, edits profile skills, and changes the current machine profile.
-- `doctor` checks the runtime, Git, npx, skills, and configuration.
+- `doctor` checks the runtime, Git, npx, skills, project discovery, repository state, and configuration.
 
 All commands that return structured data support `--json`. Errors use `{ "ok": false, "error": { "code": "...", "message": "..." } }`.
 

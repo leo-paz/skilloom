@@ -6,6 +6,10 @@ interface GitResult {
   stderr: string;
 }
 
+export class GitExecutionError extends Error {
+  override readonly name = "GitExecutionError";
+}
+
 function runGit(args: string[], cwd?: string): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     const child = spawn("git", args, {
@@ -27,9 +31,17 @@ function runGit(args: string[], cwd?: string): Promise<GitResult> {
 }
 
 async function requireGit(args: string[], cwd?: string): Promise<GitResult> {
-  const result = await runGit(args, cwd);
+  let result: GitResult;
+  try {
+    result = await runGit(args, cwd);
+  } catch (error) {
+    throw new GitExecutionError(
+      `git ${args[0] ?? "command"} failed to start: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
   if (result.code !== 0) {
-    throw new Error(
+    throw new GitExecutionError(
       `git ${args[0] ?? "command"} failed with exit ${result.code}: ${result.stderr.trim()}`,
     );
   }
