@@ -41,6 +41,7 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: bash scripts/project-acceptance.sh
+      - run: bash scripts/pty-smoke.sh
 
   bun:
     runs-on: ubuntu-latest
