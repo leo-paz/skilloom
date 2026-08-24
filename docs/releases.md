@@ -1,6 +1,6 @@
 # Release runbook
 
-Skilloom uses Changesets for stable versions and npm's `canary` dist-tag for builds from `main`.
+Skilloom uses Changesets for stable versions and npm's `canary` dist-tag for builds from `main`. The first stable version is `0.1.0`; canaries use that calculated version as their base.
 
 ## One-time bootstrap
 
