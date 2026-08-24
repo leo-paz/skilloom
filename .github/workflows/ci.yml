@@ -41,7 +41,9 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: bash scripts/project-acceptance.sh
-      - run: bash scripts/pty-smoke.sh
+      - name: Test interactive PTY cancellation
+        run: bash scripts/pty-smoke.sh
+        timeout-minutes: 2
 
   bun:
     runs-on: ubuntu-latest
