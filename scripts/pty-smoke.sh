@@ -12,9 +12,9 @@ run_width() {
   local width=$1
   local output
   if script --version 2>&1 | grep -q 'util-linux'; then
-    output=$({ sleep 1; printf '\033'; } | HOME="$pty_root/home" XDG_CONFIG_HOME="$pty_root/home/.config" CODEX_HOME="$pty_root/home/.codex" COLUMNS="$width" timeout 15s script -q -e -c "node dist/index.mjs" /dev/null 2>&1 || true)
+    output=$({ sleep 1; printf '\003'; } | HOME="$pty_root/home" XDG_CONFIG_HOME="$pty_root/home/.config" CODEX_HOME="$pty_root/home/.codex" COLUMNS="$width" timeout 15s script -q -e -c "node dist/index.mjs" /dev/null 2>&1 || true)
   else
-    output=$({ sleep 1; printf '\033'; } | HOME="$pty_root/home" XDG_CONFIG_HOME="$pty_root/home/.config" CODEX_HOME="$pty_root/home/.codex" COLUMNS="$width" script -q /dev/null node dist/index.mjs 2>&1 || true)
+    output=$({ sleep 1; printf '\003'; } | HOME="$pty_root/home" XDG_CONFIG_HOME="$pty_root/home/.config" CODEX_HOME="$pty_root/home/.codex" COLUMNS="$width" script -q /dev/null node dist/index.mjs 2>&1 || true)
   fi
 
   if [[ "$output" != *Skilloom* || "$output" != *"No changes made"* ]]; then
