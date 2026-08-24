@@ -12,7 +12,19 @@ Skilloom does not copy skill directories itself. It does not replace `skills-loc
 
 ## Quick start
 
-The package is npm-ready but is not published yet. From a checkout:
+After the first canary workflow completes, test the current `main` build without cloning the repository:
+
+```sh
+npx skilloom@canary --help
+```
+
+Stable releases use the `latest` tag:
+
+```sh
+npx skilloom@latest --help
+```
+
+From a checkout:
 
 ```sh
 npm install
@@ -146,6 +158,7 @@ npm run lint
 npm run build
 npm run smoke
 npm run verify
+npm run changeset
 ```
 
 `npm run smoke` packs the package once and runs that tarball through Node and Bun projects. `npm run verify` runs local checks, the two-machine Git integration test, package smoke tests, and disposable real project-scope acceptance. Real global acceptance requires an isolated home and an explicit opt-in:
@@ -156,6 +169,14 @@ SKILLOOM_ALLOW_GLOBAL_ACCEPTANCE=1 bash scripts/global-acceptance.sh
 
 The test refuses to start if it cannot create and verify an empty isolated Codex home. It never uses the normal user skill directory.
 
+## Releases
+
+Every ordinary pull request includes a Changeset. CI checks this with `npx changeset status --since=origin/main`.
+
+When a pull request merges to `main`, the release workflow verifies the package, publishes a snapshot under the npm `canary` tag, and creates or updates `changeset-release/main`. Merging that generated release pull request publishes the stable version under `latest`, creates a Git tag and GitHub release, and skips the canary publish for that commit.
+
+See [the release runbook](docs/releases.md) for the one-time npm and GitHub setup.
+
 ## Release policy
 
-The package metadata and tarball are ready for npm. Do not run `npm publish` without explicit approval. Windows support, hosted accounts, background services, remote execution, and automatic SSH setup are outside version 1.
+Publishing is owned by `.github/workflows/release.yml`. Windows support, hosted accounts, background services, remote execution, and automatic SSH setup are outside version 1.

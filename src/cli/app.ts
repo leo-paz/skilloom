@@ -1,4 +1,5 @@
 import { defineCommand } from "citty";
+import packageMetadata from "../../package.json" with { type: "json" };
 import { GitExecutionError } from "../adapters/git.js";
 import {
   redactProcessOutput,
@@ -21,7 +22,7 @@ import { type CliRuntime, defaultRuntime } from "./runtime.js";
 
 export { type CliRuntime, defaultRuntime };
 
-const version = "1.0.0";
+const version = packageMetadata.version;
 
 const help = `Skilloom ${version}
 

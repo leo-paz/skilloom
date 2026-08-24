@@ -1,14 +1,32 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  changeset:
+    name: Changeset Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Require a Changeset
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref != 'changeset-release/main'
+        run: npx changeset status --since=origin/main
+      - name: Release PR already contains version metadata
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'changeset-release/main'
+        run: echo "Changesets generated this release PR; no new Changeset is required."
+
   node:
     runs-on: ubuntu-latest
     steps:

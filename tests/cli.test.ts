@@ -52,6 +52,17 @@ async function setGlobalSkills(home: string, names: string[]): Promise<void> {
 }
 
 describe("CLI", () => {
+  it("reports the version published in package metadata", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
+    const test = runtime(home);
+    const packageMetadata = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+
+    expect(await runCli(["--version"], test.value)).toBe(0);
+    expect(test.out).toEqual([packageMetadata.version]);
+  });
+
   it("initializes local configuration and reports JSON", async () => {
     const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
     const test = runtime(home);
