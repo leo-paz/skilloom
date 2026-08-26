@@ -8,7 +8,12 @@ import {
   serializeProjectConfig,
   serializeUserConfig,
 } from "./schema.js";
-import type { ProjectConfig, UserConfig } from "./types.js";
+import type {
+  LocalMachine,
+  MachineInventory,
+  ProjectConfig,
+  UserConfig,
+} from "./types.js";
 
 export interface ConfigPaths {
   appDir: string;
@@ -16,6 +21,8 @@ export interface ConfigPaths {
   machineIdPath: string;
   statePath: string;
   locatorPath: string;
+  machinePath: string;
+  inventoryPath: string;
 }
 
 export function resolveConfigPaths(
@@ -52,6 +59,8 @@ export function resolveConfigPaths(
     machineIdPath: join(appDir, "machine-id"),
     statePath: join(appDir, "state.json"),
     locatorPath,
+    machinePath: join(appDir, "machine.json"),
+    inventoryPath: join(appDir, "inventory.json"),
   };
 }
 
@@ -166,6 +175,89 @@ export async function saveManagedState(
     path,
     `${JSON.stringify({ version: 1, managed: [...managed].sort() }, null, 2)}\n`,
   );
+}
+
+export async function loadLocalMachine(path: string): Promise<LocalMachine> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        `local machine configuration is missing; run skilloom setup`,
+      );
+    }
+    throw new Error(
+      `invalid local machine configuration ${path}: ${String(error)}`,
+    );
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    (parsed as { version?: unknown }).version !== 1
+  ) {
+    throw new Error(
+      `invalid local machine configuration ${path}: expected version 1`,
+    );
+  }
+  const value = parsed as {
+    id?: unknown;
+    name?: unknown;
+    workspaces?: unknown;
+  };
+  if (
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    !Array.isArray(value.workspaces) ||
+    !value.workspaces.every(
+      (workspace) =>
+        workspace &&
+        typeof workspace === "object" &&
+        typeof (workspace as { path?: unknown }).path === "string" &&
+        Number.isInteger((workspace as { depth?: unknown }).depth) &&
+        Number((workspace as { depth: number }).depth) >= 1 &&
+        Number((workspace as { depth: number }).depth) <= 8,
+    )
+  ) {
+    throw new Error(`invalid local machine configuration ${path}`);
+  }
+  return value as LocalMachine;
+}
+
+export async function saveLocalMachine(
+  path: string,
+  machine: LocalMachine,
+): Promise<void> {
+  await atomicWrite(
+    path,
+    `${JSON.stringify({ version: 1, ...machine }, null, 2)}\n`,
+  );
+}
+
+export async function loadInventorySnapshot(
+  path: string,
+): Promise<MachineInventory | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as MachineInventory;
+    if (
+      parsed.version !== 1 ||
+      !parsed.machine ||
+      !Array.isArray(parsed.projects)
+    ) {
+      throw new Error("expected version 1 inventory");
+    }
+    return parsed;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error(`invalid Skilloom inventory ${path}: ${String(error)}`);
+  }
+}
+
+export async function saveInventorySnapshot(
+  path: string,
+  inventory: MachineInventory,
+): Promise<void> {
+  await atomicWrite(path, `${JSON.stringify(inventory, null, 2)}\n`);
 }
 
 export function findProjectRoot(start: string): string | undefined {

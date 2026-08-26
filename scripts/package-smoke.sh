@@ -50,12 +50,12 @@ run_suite() {
   cd "$project"
   "${command[@]}" --help
   "${command[@]}" --version
-  "${command[@]}" init --yes --json
-  "${command[@]}" project init --json
-  "${command[@]}" plan --json
-  "${command[@]}" plan --check
-  "${command[@]}" apply --yes --json
-  "${command[@]}" status --json
+  "${command[@]}" setup "$project" --machine-name "Package smoke" --no-adopt --json
+  "${command[@]}" inventory --json
+  "${command[@]}" add review tdd --source acme/skills --to profile:default --json
+  "${command[@]}" plan --all --json
+  "${command[@]}" apply --all --yes --json
+  "${command[@]}" observe --json
   "${command[@]}" doctor --json
   cd "$repository_root"
 }

@@ -184,6 +184,7 @@ export class SkillsAdapter {
     scope: Scope,
     cwd: string,
     env: NodeJS.ProcessEnv = process.env,
+    names: string[] = [],
   ): Promise<ProcessResult> {
     try {
       return await this.runner(
@@ -191,6 +192,7 @@ export class SkillsAdapter {
         [
           "skills",
           "update",
+          ...names,
           scope === "global" ? "--global" : "--project",
           "--yes",
         ],

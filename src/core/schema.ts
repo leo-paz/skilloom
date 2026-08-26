@@ -8,9 +8,19 @@ const identifier = z
   .max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "must be a plain identifier");
 
+export function isLocalSkillSource(value: string): boolean {
+  return (
+    value.startsWith("/") ||
+    value.startsWith("~/") ||
+    value.startsWith("./") ||
+    value.startsWith("../") ||
+    value.startsWith("file:") ||
+    /^[A-Za-z]:[\\/]/.test(value)
+  );
+}
+
 export function isValidSkillSource(value: string): boolean {
-  const local =
-    value.startsWith("/") || value.startsWith("./") || value.startsWith("../");
+  const local = isLocalSkillSource(value);
   if (local) return value.length <= 2048 && /^[^\0\r\n]+$/.test(value);
   return /^[A-Za-z0-9@._~:/+-]+$/.test(value) && value.length <= 2048;
 }
@@ -72,7 +82,15 @@ const userConfigSchema = z
     version: z.literal(1),
     storage: storageSchema.default({ mode: "local" }),
     profiles: z.record(identifier, profileSchema),
-    machines: z.record(identifier, z.object({ profile: identifier }).strict()),
+    machines: z.record(
+      identifier,
+      z
+        .object({
+          profile: identifier,
+          name: z.string().min(1).max(128).optional(),
+        })
+        .strict(),
+    ),
     projectProfiles: z.record(identifier, profileSchema).default({}),
     projects: z
       .record(

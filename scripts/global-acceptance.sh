@@ -10,16 +10,8 @@ repository_root=$(cd "$(dirname "$0")/.." && pwd)
 acceptance_root=$(mktemp -d)
 trap 'rm -rf "$acceptance_root"' EXIT
 isolated_home="$acceptance_root/home"
-source_dir="$acceptance_root/source"
 project_dir="$acceptance_root/project"
-mkdir -p "$isolated_home/.codex" "$source_dir/global-review" "$project_dir"
-cat > "$source_dir/global-review/SKILL.md" <<'SKILL'
----
-name: global-review
-description: Disposable global acceptance fixture.
----
-# Global review
-SKILL
+mkdir -p "$isolated_home/.codex" "$project_dir"
 
 cd "$repository_root"
 npm run build
@@ -35,22 +27,14 @@ export npm_config_cache="$isolated_home/.npm"
 cd "$project_dir"
 initial=$(npx --yes skills list --global --agent codex --json)
 test "$initial" = "[]"
-./node_modules/.bin/skilloom init --yes --json
+npx --yes skills add mattpocock/skills --skill tdd --global --agent codex --yes
+test -e "$isolated_home/.agents/skills/tdd/SKILL.md"
+./node_modules/.bin/skilloom setup "$project_dir" --machine-name "Isolated global acceptance" --json > "$acceptance_root/setup.json"
+node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(data.adoption.adopted!==1||data.adoption.unmanaged!==0) { console.error(JSON.stringify(data.adoption)); process.exit(1) }' "$acceptance_root/setup.json"
 machine_id=$(tr -d '\n' < "$isolated_home/.config/skilloom/machine-id")
-cat > "$isolated_home/.config/skilloom/config.yaml" <<YAML
-version: 1
-storage: { mode: local }
-profiles:
-  default:
-    skills:
-      - source: $source_dir
-        name: global-review
-        agents: [codex]
-machines:
-  $machine_id: { profile: default }
-YAML
-./node_modules/.bin/skilloom apply --yes --json
-test -e "$isolated_home/.agents/skills/global-review/SKILL.md"
+grep -q 'name: tdd' "$isolated_home/.config/skilloom/config.yaml"
+./node_modules/.bin/skilloom setup "$project_dir" --machine-name "Isolated global acceptance" --json > "$acceptance_root/setup-again.json"
+node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(data.adoption.adopted!==0) process.exit(1)' "$acceptance_root/setup-again.json"
 npx --yes skills list --global --agent codex --json > "$acceptance_root/global-list.json"
 node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(data.length!==1||!data[0].path.startsWith(process.argv[2])) process.exit(1)' "$acceptance_root/global-list.json" "$isolated_home"
 ./node_modules/.bin/skilloom update --yes --json
@@ -83,7 +67,7 @@ machines:
   $machine_id: { profile: default }
 YAML
 ./node_modules/.bin/skilloom apply --yes --json
-test ! -e "$isolated_home/.codex/skills/global-review"
+test ! -e "$isolated_home/.agents/skills/tdd"
 test "$(npx --yes skills list --global --agent codex --json)" = "[]"
 
 echo "Isolated real global-scope acceptance passed."
