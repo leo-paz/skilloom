@@ -38,21 +38,13 @@ export CODEX_HOME="$isolated_home/.codex"
 export npm_config_cache="$isolated_home/.npm"
 cd "$project_dir"
 
-./node_modules/.bin/skilloom init --yes --json
-./node_modules/.bin/skilloom project init --json
-cat > .skilloom.yaml <<YAML
-version: 1
-skills:
-  - source: $source_dir
-    name: review
-    agents: [codex]
-YAML
-
-./node_modules/.bin/skilloom plan --check --json && exit 1 || test "$?" -eq 2
-./node_modules/.bin/skilloom apply --yes --json | tee "$acceptance_root/first-apply.json"
+npx --yes skills add "$source_dir" --skill review --agent codex --yes
 test -e .agents/skills/review/SKILL.md
 test -f skills-lock.json
-./node_modules/.bin/skilloom plan --check --json | tee "$acceptance_root/converged.json"
+./node_modules/.bin/skilloom setup "$acceptance_root" --depth 1 --machine-name "Project acceptance" --json | tee "$acceptance_root/setup.json"
+node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(data.adoption.adopted!==1||data.inventory.discovery.projectsFound!==1) process.exit(1)' "$acceptance_root/setup.json"
+./node_modules/.bin/skilloom plan --all --check --json | tee "$acceptance_root/converged.json"
+./node_modules/.bin/skilloom remove review --from project:project --json
 
 cat > .skilloom.yaml <<YAML
 version: 1
@@ -61,12 +53,12 @@ skills:
     name: lint
     agents: [codex]
 YAML
-./node_modules/.bin/skilloom apply --yes --json | tee "$acceptance_root/transition.json"
+./node_modules/.bin/skilloom apply --all --yes --json | tee "$acceptance_root/transition.json"
 test -e .agents/skills/lint/SKILL.md
 test ! -e .agents/skills/review
 npx --yes skills list --json | tee "$acceptance_root/upstream-list.json"
 node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(data.length!==1||data[0].name!=="lint") process.exit(1)' "$acceptance_root/upstream-list.json"
-./node_modules/.bin/skilloom apply --yes --json | tee "$acceptance_root/no-op.json"
+./node_modules/.bin/skilloom apply --all --yes --json | tee "$acceptance_root/no-op.json"
 node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(data.completed.length!==0||!data.converged) process.exit(1)' "$acceptance_root/no-op.json"
 
 echo "Real project-scope acceptance passed with skills $(npx --yes skills --version)."
