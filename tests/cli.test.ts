@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ProcessResult } from "../src/adapters/skills.js";
 import { type CliRuntime, runCli } from "../src/cli/app.js";
+import { loadUserConfig, saveUserConfig } from "../src/core/config.js";
 
 function runtime(home: string): {
   value: CliRuntime;
@@ -77,6 +78,134 @@ describe("CLI", () => {
     ).toContain("default");
   });
 
+  it("sets up a workspace and adopts existing global and project skills", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-setup-"));
+    const workspace = join(home, "dev");
+    const project = join(workspace, "personal", "skilloom");
+    await import("node:fs/promises").then(({ mkdir }) =>
+      mkdir(join(project, ".git"), { recursive: true }),
+    );
+    const test = runtime(home);
+    const mutations: string[][] = [];
+    test.value.run = async (executable, args) => {
+      if (executable === "git") {
+        return {
+          code: 0,
+          stdout: "git@github.com:leo-paz/skilloom.git\n",
+          stderr: "",
+        };
+      }
+      if (args.includes("list")) {
+        const global = args.includes("--global");
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            {
+              name: global ? "code-review" : "tdd",
+              scope: global ? "global" : "project",
+              agents: ["Codex"],
+              source: "mattpocock/skills",
+            },
+          ]),
+          stderr: "",
+        };
+      }
+      mutations.push(args);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+
+    expect(
+      await runCli(
+        ["setup", "~/dev", "--machine-name", "Test Mac", "--json"],
+        test.value,
+      ),
+    ).toBe(0);
+    const payload = JSON.parse(test.out.at(-1) ?? "{}");
+    expect(payload).toMatchObject({
+      ok: true,
+      command: "setup",
+      inventory: {
+        machine: { name: "Test Mac" },
+        discovery: { projectsFound: 1 },
+      },
+      adoption: { adopted: 2, unmanaged: 0 },
+    });
+    const config = await readFile(
+      join(home, ".config", "skilloom", "config.yaml"),
+      "utf8",
+    );
+    expect(config).toContain("name: code-review");
+    expect(config).toContain("github.com/leo-paz/skilloom");
+    expect(config).toContain("name: tdd");
+    const state = await readFile(
+      join(home, ".config", "skilloom", "state.json"),
+      "utf8",
+    );
+    expect(state).toContain("global:code-review");
+    expect(state).toContain("project:");
+    expect(mutations).toEqual([]);
+
+    test.out.length = 0;
+    expect(await runCli(["inventory", "--json"], test.value)).toBe(0);
+    expect(JSON.parse(test.out.at(-1) ?? "{}")).toMatchObject({
+      ok: true,
+      command: "inventory",
+      machine: { name: "Test Mac", profile: "default" },
+      discovery: { projectsFound: 1 },
+      globalSkills: [
+        { name: "code-review", installed: true, desired: true, managed: true },
+      ],
+      projects: [
+        {
+          id: "github.com/leo-paz/skilloom",
+          skills: [
+            { name: "tdd", installed: true, desired: true, managed: true },
+          ],
+        },
+      ],
+    });
+
+    test.out.length = 0;
+    expect(await runCli(["observe", "--json"], test.value)).toBe(0);
+    expect(JSON.parse(test.out.at(-1) ?? "{}")).toMatchObject({
+      ok: true,
+      command: "observe",
+      changed: true,
+      published: false,
+    });
+    expect(
+      JSON.parse(
+        await readFile(
+          join(home, ".config", "skilloom", "inventory.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({ machine: { name: "Test Mac" } });
+
+    test.out.length = 0;
+    expect(await runCli(["observe", "--json"], test.value)).toBe(0);
+    expect(JSON.parse(test.out.at(-1) ?? "{}")).toMatchObject({
+      changed: false,
+      published: false,
+    });
+
+    test.out.length = 0;
+    expect(
+      await runCli(
+        ["setup", workspace, "--machine-name", "Test Mac", "--json"],
+        test.value,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(test.out.at(-1) ?? "{}").adoption).toEqual({
+      adopted: 0,
+      unmanaged: 0,
+    });
+    const machine = JSON.parse(
+      await readFile(join(home, ".config", "skilloom", "machine.json"), "utf8"),
+    );
+    expect(machine.workspaces).toEqual([{ path: workspace, depth: 3 }]);
+  });
+
   it("plans, checks drift, and applies with stable JSON", async () => {
     const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
     const test = runtime(home);
@@ -102,11 +231,86 @@ describe("CLI", () => {
     expect(test.out.some((line) => line.includes('"completed"'))).toBe(true);
   });
 
+  it("plans and applies desired state across discovered project checkouts", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-workspace-apply-"));
+    const workspace = join(home, "dev");
+    const project = join(workspace, "personal", "skilloom");
+    await mkdir(join(project, ".git"), { recursive: true });
+    const test = runtime(home);
+    const executions: Array<{ args: string[]; cwd: string }> = [];
+    test.value.run = async (executable, args, options) => {
+      if (executable === "git") {
+        return {
+          code: 0,
+          stdout: "git@github.com:leo-paz/skilloom.git\n",
+          stderr: "",
+        };
+      }
+      if (args.includes("list")) return { code: 0, stdout: "[]", stderr: "" };
+      executions.push({ args, cwd: options.cwd });
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    await runCli(
+      ["setup", workspace, "--machine-name", "Test Mac", "--no-adopt"],
+      test.value,
+    );
+    await runCli(
+      [
+        "add",
+        "tdd",
+        "--source",
+        "mattpocock/skills",
+        "--to",
+        "project:skilloom",
+      ],
+      test.value,
+    );
+
+    expect(await runCli(["plan", "--all", "--json"], test.value)).toBe(0);
+    expect(JSON.parse(test.out.at(-1) ?? "{}")).toMatchObject({
+      ok: true,
+      command: "plan",
+      converged: false,
+      operations: [
+        { name: "tdd", project: "github.com/leo-paz/skilloom", cwd: project },
+      ],
+    });
+    expect(
+      await runCli(["apply", "--all", "--yes", "--json"], test.value),
+    ).toBe(0);
+    expect(executions).toEqual([
+      {
+        cwd: project,
+        args: [
+          "skills",
+          "add",
+          "mattpocock/skills",
+          "--skill",
+          "tdd",
+          "--agent",
+          "codex",
+          "--yes",
+        ],
+      },
+    ]);
+  });
+
   it("prints help instead of hanging with no command on a non-TTY", async () => {
     const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
     const test = runtime(home);
     expect(await runCli([], test.value)).toBe(0);
     expect(test.out.join("\n")).toContain("skilloom plan");
+  });
+
+  it("prints command-specific help for agent discovery", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-help-"));
+    const test = runtime(home);
+    expect(await runCli(["setup", "--help"], test.value)).toBe(0);
+    expect(test.out.at(-1)).toContain("Usage: skilloom setup [WORKSPACE]");
+    expect(test.out.at(-1)).toContain("--no-adopt");
+
+    expect(await runCli(["add", "--help"], test.value)).toBe(0);
+    expect(test.out.at(-1)).toContain("--to profile:NAME|project:ID");
   });
 
   it("returns a JSON error envelope for invalid commands", async () => {
@@ -198,6 +402,63 @@ describe("CLI", () => {
     expect(mutations).toBe(0);
   });
 
+  it("updates one named skill in one explicit scope", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-update-"));
+    const test = runtime(home);
+    const calls: string[][] = [];
+    test.value.run = async (_executable, args) => {
+      calls.push(args);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+
+    expect(
+      await runCli(
+        ["update", "code-review", "--scope", "global", "--yes", "--json"],
+        test.value,
+      ),
+    ).toBe(0);
+    expect(calls).toEqual([
+      ["skills", "update", "code-review", "--global", "--yes"],
+    ]);
+  });
+
+  it("includes published observations from other machines in inventory", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-remote-observation-"));
+    const test = runtime(home);
+    await runCli(["init", "--yes"], test.value);
+    const configPath = join(home, ".config", "skilloom", "config.yaml");
+    const config = await loadUserConfig(configPath);
+    config.machines.remote = { profile: "default", name: "Leo's MacBook" };
+    await saveUserConfig(configPath, config);
+    const observations = join(home, ".config", "skilloom", "observations");
+    await mkdir(observations, { recursive: true });
+    await writeFile(
+      join(observations, "remote.json"),
+      JSON.stringify({
+        version: 1,
+        observedAt: "2026-08-26T12:00:00.000Z",
+        machine: { id: "remote", name: "Leo's MacBook", profile: "default" },
+        discovery: { status: "found", projectsFound: 4, checkoutsFound: 4 },
+        globalSkills: [{ name: "review", installed: true }],
+        projects: [],
+        operations: [],
+      }),
+    );
+
+    expect(await runCli(["inventory", "--json"], test.value)).toBe(0);
+    expect(JSON.parse(test.out.at(-1) ?? "{}").machines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "remote",
+          name: "Leo's MacBook",
+          observedAt: "2026-08-26T12:00:00.000Z",
+          projects: 4,
+          globalSkills: 1,
+        }),
+      ]),
+    );
+  });
+
   it("connects to an existing external config and assigns this machine", async () => {
     const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
     const externalPath = join(home, "shared.yaml");
@@ -262,7 +523,6 @@ describe("CLI", () => {
       mkdir(join(project, ".git"), { recursive: true }),
     );
     test.value.cwd = project;
-    await runCli(["project", "init"], test.value);
     expect(
       await runCli(
         [
@@ -287,6 +547,78 @@ describe("CLI", () => {
     expect(
       await readFile(join(project, ".skilloom.yaml"), "utf8"),
     ).not.toContain("name: review");
+  });
+
+  it("adds, edits, moves, and removes policy in atomic commands", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-policy-"));
+    const test = runtime(home);
+    await runCli(["init", "--yes"], test.value);
+    const configPath = join(home, ".config", "skilloom", "config.yaml");
+    const initialConfig = await loadUserConfig(configPath);
+    initialConfig.projects["github.com/leo-paz/skilloom"] = { skills: [] };
+    await saveUserConfig(configPath, initialConfig);
+
+    expect(
+      await runCli(
+        [
+          "add",
+          "research",
+          "tdd",
+          "--source",
+          "mattpocock/skills",
+          "--to",
+          "profile:default",
+          "--agent",
+          "codex",
+          "--json",
+        ],
+        test.value,
+      ),
+    ).toBe(0);
+    expect(
+      await runCli(
+        [
+          "edit",
+          "research",
+          "--in",
+          "profile:default",
+          "--agents",
+          "codex,claude-code",
+          "--json",
+        ],
+        test.value,
+      ),
+    ).toBe(0);
+    let config = await readFile(configPath, "utf8");
+    expect(config).toContain("claude-code");
+
+    expect(
+      await runCli(
+        [
+          "move",
+          "research",
+          "--from",
+          "profile:default",
+          "--to",
+          "project:skilloom",
+          "--json",
+        ],
+        test.value,
+      ),
+    ).toBe(0);
+    config = await readFile(configPath, "utf8");
+    expect(config.match(/name: research/g)).toHaveLength(1);
+    expect(config).toContain("github.com/leo-paz/skilloom");
+
+    expect(
+      await runCli(
+        ["remove", "research", "--from", "project:skilloom", "--json"],
+        test.value,
+      ),
+    ).toBe(0);
+    config = await readFile(configPath, "utf8");
+    expect(config).not.toContain("name: research");
+    expect(config).toContain("name: tdd");
   });
 
   it("diagnoses project discovery and repository state", async () => {

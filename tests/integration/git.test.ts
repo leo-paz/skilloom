@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -10,6 +10,122 @@ import { planChanges } from "../../src/core/plan.js";
 import { resolveDesiredState } from "../../src/core/resolve.js";
 
 describe("managed Git configuration", () => {
+  it("publishes path-redacted observations between two machines", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skilloom-observations-"));
+    const remote = join(root, "remote.git");
+    const git = new GitAdapter();
+    await git.initBare(remote);
+
+    const machineRuntime = async (name: string) => {
+      const home = join(root, name);
+      const workspace = join(home, "dev");
+      const project = join(workspace, "project");
+      await mkdir(join(project, ".git"), { recursive: true });
+      const output: string[] = [];
+      return {
+        home,
+        project,
+        output,
+        runtime: {
+          cwd: home,
+          env: { HOME: home, XDG_CONFIG_HOME: join(home, ".config") },
+          isTTY: false,
+          stdout: (line: string) => output.push(line),
+          stderr: (line: string) => output.push(line),
+          run: async (
+            executable: string,
+            args: string[],
+          ): Promise<ProcessResult> =>
+            executable === "git"
+              ? { code: 1, stdout: "", stderr: "no remote" }
+              : {
+                  code: 0,
+                  stdout: args.includes("--global")
+                    ? JSON.stringify([
+                        {
+                          name: "local-fixture",
+                          scope: "global",
+                          agents: ["Codex"],
+                          source: home,
+                        },
+                      ])
+                    : "[]",
+                  stderr: "",
+                },
+          confirm: async () => true,
+        },
+      };
+    };
+    const one = await machineRuntime("one");
+    const two = await machineRuntime("two");
+
+    expect(
+      await runCli(
+        [
+          "setup",
+          one.project,
+          "--sync",
+          remote,
+          "--machine-name",
+          "Mac Mini",
+          "--json",
+        ],
+        one.runtime,
+      ),
+    ).toBe(0);
+    expect(await runCli(["observe", "--publish", "--json"], one.runtime)).toBe(
+      0,
+    );
+    expect(
+      await runCli(
+        [
+          "setup",
+          two.project,
+          "--sync",
+          remote,
+          "--machine-name",
+          "MacBook",
+          "--json",
+        ],
+        two.runtime,
+      ),
+    ).toBe(0);
+    expect(await runCli(["observe", "--publish", "--json"], two.runtime)).toBe(
+      0,
+    );
+
+    one.output.length = 0;
+    expect(await runCli(["inventory", "--json"], one.runtime)).toBe(0);
+    const inventory = JSON.parse(one.output.at(-1) ?? "{}");
+    expect(inventory.machines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Mac Mini", local: true }),
+        expect.objectContaining({
+          name: "MacBook",
+          local: false,
+          projects: 1,
+          globalSkills: 1,
+          changes: 0,
+        }),
+      ]),
+    );
+
+    const verify = join(root, "verify-observations");
+    await git.clone(remote, verify);
+    const observationFiles = await import("node:fs/promises").then(
+      ({ readdir }) => readdir(join(verify, "observations")),
+    );
+    expect(observationFiles).toHaveLength(2);
+    for (const file of observationFiles) {
+      const observation = await readFile(
+        join(verify, "observations", file),
+        "utf8",
+      );
+      expect(observation).not.toContain(one.home);
+      expect(observation).not.toContain(two.home);
+    }
+  });
+
   it("synchronizes two machines and refuses dirty changes", async () => {
     const root = await mkdtemp(join(tmpdir(), "skilloom-git-"));
     const remote = join(root, "remote.git");

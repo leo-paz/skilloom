@@ -94,8 +94,12 @@ export class GitAdapter {
     await requireGit(["pull", "--ff-only"], path);
   }
 
-  async commitAndPush(path: string, message: string): Promise<void> {
-    await requireGit(["add", "--", "config.yaml"], path);
+  async commitAndPush(
+    path: string,
+    message: string,
+    files: string[] = ["config.yaml"],
+  ): Promise<void> {
+    await requireGit(["add", "--", ...files], path);
     if (!(await this.status(path)).trim()) return;
     await requireGit(
       [

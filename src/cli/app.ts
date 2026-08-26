@@ -17,8 +17,16 @@ import {
   initializeConfiguration,
   initializeProject,
 } from "./configuration.js";
+import { showInventory } from "./inventory.js";
+import { observeMachine } from "./observe.js";
+import { editPolicy } from "./policy.js";
 import { applyReconciliation, showReconciliation } from "./reconcile.js";
 import { type CliRuntime, defaultRuntime } from "./runtime.js";
+import { setupMachine } from "./setup.js";
+import {
+  applyWorkspacePlan,
+  showWorkspacePlan,
+} from "./workspace-reconcile.js";
 
 export { type CliRuntime, defaultRuntime };
 
@@ -29,6 +37,13 @@ const help = `Skilloom ${version}
 Usage: skilloom <command> [options]
 
 Commands:
+  skilloom setup [DIR]      Discover projects and adopt existing skills
+  skilloom inventory        Show machines, projects, skills, and drift
+  skilloom add NAME...      Add desired policy atomically
+  skilloom edit NAME        Edit desired policy atomically
+  skilloom move NAME        Move desired policy atomically
+  skilloom remove NAME      Remove desired policy atomically
+  skilloom observe          Save or publish the current inventory
   skilloom init             Initialize user configuration
   skilloom plan             Show desired changes
   skilloom apply            Apply desired changes through npx skills
@@ -47,6 +62,45 @@ Common options:
   --help                    Show command help
   --version                 Show the version`;
 
+const commandHelp: Record<string, string> = {
+  setup: `Usage: skilloom setup [WORKSPACE] [options]
+
+Discover Git projects, inspect existing installations through the skills CLI, and adopt eligible skills without reinstalling them.
+
+Options:
+  --depth <1-8>             Maximum project discovery depth, default 3
+  --machine-name <name>     Human-readable name for this machine
+  --profile <name>          Assign an existing global profile
+  --storage <mode>          local, external, or managed
+  --repository <url>        Managed Git configuration repository
+  --sync <url>              Shorthand for managed Git storage
+  --no-adopt                Keep existing installations unmanaged
+  --json                    Emit the complete setup inventory`,
+  inventory: `Usage: skilloom inventory [--json]
+
+Show configured machines and profiles plus this machine's discovered projects, installed skills, ownership, and drift.`,
+  add: `Usage: skilloom add NAME... --source SOURCE --to profile:NAME|project:ID [options]
+
+Options:
+  --agent <name>            Target agent, default codex
+  --agents <a,b>            Target several agents
+  --json                    Emit the saved policy change`,
+  edit: `Usage: skilloom edit NAME --in profile:NAME|project:ID [options]
+
+Options:
+  --source <source>         Replace the skill source
+  --agents <a,b>            Replace target agents
+  --json                    Emit the saved policy change`,
+  move: `Usage: skilloom move NAME --from profile:NAME|project:ID --to profile:NAME|project:ID [--json]`,
+  remove: `Usage: skilloom remove NAME --from profile:NAME|project:ID [--json]`,
+  observe: `Usage: skilloom observe [--publish] [--json]
+
+Refresh local installed state. Publishing requires managed Git storage and never applies changes.`,
+  plan: `Usage: skilloom plan [--all] [--check] [--json]`,
+  apply: `Usage: skilloom apply [--all] [--yes] [--json]`,
+  update: `Usage: skilloom update [NAME] [--scope global|project] [--yes] [--json]`,
+};
+
 export const commandContract = defineCommand({
   meta: {
     name: "skilloom",
@@ -56,6 +110,13 @@ export const commandContract = defineCommand({
   subCommands: Object.fromEntries(
     [
       "init",
+      "setup",
+      "inventory",
+      "add",
+      "edit",
+      "move",
+      "remove",
+      "observe",
       "plan",
       "apply",
       "status",
@@ -125,10 +186,20 @@ async function update(
     return 5;
   const adapter = new SkillsAdapter(runtime.run);
   const root = findProjectRoot(runtime.cwd) || runtime.cwd;
-  const results = [
-    await adapter.update("project", root, runtime.env),
-    await adapter.update("global", root, runtime.env),
-  ];
+  const scopeValue = option(args, "--scope");
+  if (scopeValue && scopeValue !== "global" && scopeValue !== "project") {
+    throw new Error("--scope must be global or project");
+  }
+  const name = args[0] && !args[0].startsWith("--") ? args[0] : undefined;
+  const scopes = scopeValue
+    ? [scopeValue as "global" | "project"]
+    : (["project", "global"] as const);
+  const results = [];
+  for (const scope of scopes) {
+    results.push(
+      await adapter.update(scope, root, runtime.env, name ? [name] : []),
+    );
+  }
   const failure = results.find((result) => result.code !== 0);
   if (failure)
     throw new SkillsExecutionError(
@@ -139,8 +210,8 @@ async function update(
     runtime,
     json,
     "update",
-    { scopes: ["project", "global"] },
-    "Updated project and global skills.",
+    { scopes, skills: name ? [name] : [] },
+    `Updated ${name || "installed skills"} in ${scopes.join(" and ")} scope.`,
   );
   return 0;
 }
@@ -247,21 +318,44 @@ export async function runCli(
     }
     if (rawArgs.length === 0) {
       if (runtime.isTTY) {
-        const { runGuidedMenu } = await import("../tui/menu.js");
-        return runGuidedMenu((args) => runCli(args, runtime));
+        const { runDashboard } = await import("../tui/dashboard.js");
+        return runDashboard(
+          () => showInventoryForDashboard(runtime),
+          (args) => runCli(args, runtime),
+        );
       }
       runtime.stdout(help);
       return 0;
     }
     if (flag(rawArgs, "--help") || flag(rawArgs, "-h")) {
-      runtime.stdout(help);
+      runtime.stdout(commandHelp[rawArgs[0] ?? ""] ?? help);
       return 0;
     }
     const command = rawArgs[0];
     if (command === "init")
       return await initializeConfiguration(rawArgs.slice(1), runtime, json);
+    if (command === "setup")
+      return await setupMachine(rawArgs.slice(1), runtime, json);
+    if (command === "inventory")
+      return await showInventory(
+        runtime,
+        json,
+        option(rawArgs.slice(1), "--config"),
+      );
+    if (
+      command === "add" ||
+      command === "edit" ||
+      command === "move" ||
+      command === "remove"
+    ) {
+      return await editPolicy(command, rawArgs.slice(1), runtime, json);
+    }
+    if (command === "observe")
+      return await observeMachine(rawArgs.slice(1), runtime, json);
     if (command === "plan") {
       const args = rawArgs.slice(1);
+      if (flag(args, "--all"))
+        return await showWorkspacePlan("plan", args, runtime, json);
       return await showReconciliation(
         "plan",
         {
@@ -274,6 +368,8 @@ export async function runCli(
     }
     if (command === "status") {
       const args = rawArgs.slice(1);
+      if (flag(args, "--all"))
+        return await showWorkspacePlan("status", args, runtime, json);
       return await showReconciliation(
         "status",
         { configPath: option(args, "--config"), json },
@@ -282,6 +378,8 @@ export async function runCli(
     }
     if (command === "apply") {
       const args = rawArgs.slice(1);
+      if (flag(args, "--all"))
+        return await applyWorkspacePlan(args, runtime, json);
       return await applyReconciliation(
         {
           configPath: option(args, "--config"),
@@ -316,4 +414,11 @@ export async function runCli(
     );
     return executionFailure ? 4 : 3;
   }
+}
+
+async function showInventoryForDashboard(
+  runtime: CliRuntime,
+): Promise<import("../core/types.js").MachineInventory> {
+  const { loadCurrentInventory } = await import("./inventory.js");
+  return loadCurrentInventory(runtime);
 }

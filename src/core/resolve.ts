@@ -40,6 +40,7 @@ export function resolveDesiredState(
   machineId: string,
   projectRoot?: string,
   manifest?: ProjectConfig,
+  projectId?: string,
 ): DesiredSkill[] {
   const output = new Map<string, DesiredSkill>();
   const machine = config.machines[machineId];
@@ -58,7 +59,9 @@ export function resolveDesiredState(
   );
 
   if (projectRoot) {
-    const personal = config.projects[projectRoot];
+    const personal =
+      (projectId ? config.projects[projectId] : undefined) ??
+      config.projects[projectRoot];
     const profileName = manifest?.profile ?? personal?.profile;
     if (profileName) {
       const profile = config.projectProfiles[profileName];

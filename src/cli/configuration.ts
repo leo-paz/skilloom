@@ -183,9 +183,12 @@ export async function editProject(
   if (!root)
     throw new Error(`project ${command} must run inside a Git repository`);
   const path = join(root, ".skilloom.yaml");
-  const manifest = await loadProjectConfig(path);
+  const existingManifest = await loadProjectConfig(path);
+  const manifest =
+    existingManifest ??
+    (command === "add" ? { version: 1 as const, skills: [] } : undefined);
   if (!manifest)
-    throw new Error(`run skilloom project init before project ${command}`);
+    throw new Error(`project skill policy does not exist at ${path}`);
   const nameValue = option(args, "--skill");
   if (!nameValue) throw new Error(`project ${command} requires --skill`);
   const name = requireIdentifier(nameValue, "skill name");
