@@ -186,6 +186,13 @@ function inventorySkills(
       existing.agents = [...skill.agents].sort();
       existing.ownership = skill.repositoryOwned ? "repository" : "personal";
       if (
+        !skill.repositoryOwned &&
+        (skill.source === null || skill.agents.length === 0)
+      ) {
+        existing.conflict =
+          "Installed personal skill has unknown source or agent coverage; verify it before synchronizing.";
+      }
+      if (
         skill.repositoryOwned &&
         (skill.missing ||
           (skill.source !== null && skill.source !== existing.desiredSource) ||

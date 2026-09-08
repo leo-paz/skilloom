@@ -136,6 +136,24 @@ async function buildPlan(
       reason:
         "Repository-owned skill differs from the requirement; update it through project Git.",
     }));
+  for (const installed of [...global, ...project]) {
+    if (
+      !installed.repositoryOwned &&
+      (installed.source === null || installed.agents.length === 0) &&
+      desired.some(
+        (skill) =>
+          skill.scope === installed.scope && skill.name === installed.name,
+      )
+    ) {
+      conflicts.push({
+        name: installed.name,
+        path:
+          installed.scope === "global" ? "global" : projectRoot || runtime.cwd,
+        reason:
+          "Installed personal skill has unknown source or agent coverage; verify it before synchronizing.",
+      });
+    }
+  }
   return {
     conflicts,
     operations: protectRepositorySkills(

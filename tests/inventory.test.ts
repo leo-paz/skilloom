@@ -79,9 +79,32 @@ describe("machine inventory", () => {
       },
     );
     expect(
-      present.projects[0]?.checkouts[0]?.skills[0]?.conflict,
+      present.projects[0]?.checkouts[0]?.skills?.[0]?.conflict,
     ).toBeUndefined();
-    expect(present.projects[0]?.checkouts[0]?.skills[0]?.installed).toBe(true);
+    expect(present.projects[0]?.checkouts[0]?.skills?.[0]?.installed).toBe(true);
+    config.profiles.default!.skills = [
+      { name: "personal", source: "test/skills", agents: ["codex"] },
+    ];
+    const unknown = await buildInventory(
+      {
+        machine: { id: "a", name: "Test", workspaces: [] },
+        config,
+        managed: new Set(),
+        cwd: root,
+        env: {},
+      },
+      {
+        listSkills: async (scope) => [
+          { name: "personal", source: null, agents: [], scope },
+        ],
+        projectRemote: async () => null,
+      },
+    );
+    expect(unknown.globalSkills[0]).toMatchObject({
+      name: "personal",
+      installed: true,
+      conflict: expect.stringContaining("unknown source or agent coverage"),
+    });
   });
   it("excludes linked worktrees and protects tracked skills despite stale management", async () => {
     const root = await mkdtemp(join(tmpdir(), "skilloom-git-inventory-"));
