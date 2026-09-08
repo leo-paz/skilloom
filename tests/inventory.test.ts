@@ -81,7 +81,9 @@ describe("machine inventory", () => {
     expect(
       present.projects[0]?.checkouts[0]?.skills?.[0]?.conflict,
     ).toBeUndefined();
-    expect(present.projects[0]?.checkouts[0]?.skills?.[0]?.installed).toBe(true);
+    expect(present.projects[0]?.checkouts[0]?.skills?.[0]?.installed).toBe(
+      true,
+    );
     config.profiles.default!.skills = [
       { name: "personal", source: "test/skills", agents: ["codex"] },
     ];
