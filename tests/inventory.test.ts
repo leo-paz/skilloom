@@ -17,6 +17,43 @@ const emptyConfig = (machineId: string): UserConfig => ({
 });
 
 describe("machine inventory", () => {
+  it("reports a tracked skill missing from upstream as protected and unresolved", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skilloom-tracked-missing-"));
+    await mkdir(join(root, ".agents/skills/review"), { recursive: true });
+    await writeFile(join(root, ".agents/skills/review/SKILL.md"), "review");
+    execFileSync("git", ["init", root]);
+    execFileSync("git", ["-C", root, "add", "."]);
+    const config = emptyConfig("a");
+    config.projects["github.com/test/repo"] = {
+      skills: [{ name: "review", source: "test/skills", agents: ["codex"] }],
+    };
+    const inventory = await buildInventory(
+      {
+        machine: {
+          id: "a",
+          name: "Test",
+          workspaces: [{ path: root, depth: 1 }],
+        },
+        config,
+        managed: new Set(),
+        cwd: root,
+        env: {},
+      },
+      {
+        listSkills: async () => [],
+        projectRemote: async () => "https://github.com/test/repo.git",
+      },
+    );
+    expect(inventory.operations).toEqual([]);
+    expect(inventory.projects[0]?.checkouts[0]?.skills).toEqual([
+      expect.objectContaining({
+        name: "review",
+        installed: false,
+        ownership: "repository",
+        conflict: expect.any(String),
+      }),
+    ]);
+  });
   it("excludes linked worktrees and protects tracked skills despite stale management", async () => {
     const root = await mkdtemp(join(tmpdir(), "skilloom-git-inventory-"));
     const repo = join(root, "repo");
@@ -114,9 +151,15 @@ describe("machine inventory", () => {
     const first = join(root, "personal", "skilloom");
     const second = join(root, "worktrees", "skilloom-review");
     const ignored = join(root, "node_modules", "ignored");
-    await mkdir(join(first, ".git"), { recursive: true });
+    await mkdir(first, { recursive: true });
+    execFileSync("git", ["init", first]);
     await mkdir(second, { recursive: true });
-    await writeFile(join(second, ".git"), "gitdir: /tmp/common\n");
+    execFileSync("git", [
+      "init",
+      "--separate-git-dir",
+      join(root, "separate-git"),
+      second,
+    ]);
     await mkdir(join(ignored, ".git"), { recursive: true });
 
     const projectSkills: InstalledSkill[] = [

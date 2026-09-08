@@ -5,6 +5,7 @@ import { basename, join, resolve } from "node:path";
 import {
   inspectProjectSkills,
   isLinkedWorktree,
+  projectRevision,
   protectRepositorySkills,
 } from "../adapters/project.js";
 import { loadProjectConfig } from "./config.js";
@@ -60,6 +61,7 @@ interface DiscoveredCheckout {
 }
 
 interface RootResult {
+  excludedWorktrees: string[];
   root: MachineInventory["discovery"]["roots"][number];
   checkouts: string[];
 }
@@ -98,9 +100,12 @@ async function scanDirectory(
   depth: number,
   maximumDepth: number,
   output: string[],
+  excludedWorktrees: string[],
 ): Promise<void> {
   if (existsSync(join(path, ".git"))) {
-    if (!(await isLinkedWorktree(path))) output.push(await realpath(path));
+    if (await isLinkedWorktree(path))
+      excludedWorktrees.push(await realpath(path));
+    else output.push(await realpath(path));
     return;
   }
   if (depth >= maximumDepth) return;
@@ -116,6 +121,7 @@ async function scanDirectory(
       depth + 1,
       maximumDepth,
       output,
+      excludedWorktrees,
     );
   }
 }
@@ -124,9 +130,14 @@ async function scanRoot(workspace: WorkspaceRoot): Promise<RootResult> {
   const path = resolve(workspace.path);
   const root = { path, depth: workspace.depth } as RootResult["root"];
   const checkouts: string[] = [];
+  const excludedWorktrees: string[] = [];
   try {
-    await scanDirectory(path, 0, workspace.depth, checkouts);
-    return { root: { ...root, status: "scanned" }, checkouts };
+    await scanDirectory(path, 0, workspace.depth, checkouts, excludedWorktrees);
+    return {
+      root: { ...root, status: "scanned" },
+      checkouts,
+      excludedWorktrees,
+    };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     return {
@@ -136,6 +147,7 @@ async function scanRoot(workspace: WorkspaceRoot): Promise<RootResult> {
         detail: error instanceof Error ? error.message : String(error),
       },
       checkouts,
+      excludedWorktrees,
     };
   }
 }
@@ -168,14 +180,15 @@ function inventorySkills(
       !skill.repositoryOwned &&
       managed.has(managedStateKey(skill, projectRoot));
     if (existing) {
-      existing.installed = true;
+      existing.installed = !skill.missing;
       existing.managed = isManaged;
       existing.source = skill.source;
       existing.agents = [...skill.agents].sort();
       existing.ownership = skill.repositoryOwned ? "repository" : "personal";
       if (
         skill.repositoryOwned &&
-        (skill.source !== existing.desiredSource ||
+        (skill.missing ||
+          skill.source !== existing.desiredSource ||
           existing.desiredAgents?.some(
             (agent) => !skill.agents.includes(agent),
           ))
@@ -185,9 +198,11 @@ function inventorySkills(
       }
     } else {
       entries.set(key, {
-        ...skill,
+        name: skill.name,
+        source: skill.source,
+        scope: skill.scope,
         agents: [...skill.agents].sort(),
-        installed: true,
+        installed: !skill.missing,
         desired: false,
         managed: isManaged,
         ownership: skill.repositoryOwned ? "repository" : "personal",
@@ -314,6 +329,7 @@ export async function buildInventory(
       }
       checkoutInventories.push({
         path: checkout.path,
+        ...(await projectRevision(checkout.path)),
         skills: checkoutSkills,
         operations: checkoutOperations,
       });
@@ -346,6 +362,13 @@ export async function buildInventory(
       profile: machineConfig.profile,
     },
     discovery: {
+      ...(rootResults.some((result) => result.excludedWorktrees.length)
+        ? {
+            excludedWorktrees: new Set(
+              rootResults.flatMap((result) => result.excludedWorktrees),
+            ).size,
+          }
+        : {}),
       status: incomplete
         ? "incomplete"
         : projects.length > 0

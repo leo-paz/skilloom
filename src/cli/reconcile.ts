@@ -114,7 +114,16 @@ async function buildPlan(
   const protectedNames = new Set(
     project.filter((skill) => skill.repositoryOwned).map((skill) => skill.name),
   );
-  const conflicts = planned
+  const conflicts = [
+    ...planned,
+    ...desired
+      .filter(
+        (skill) =>
+          skill.scope === "project" &&
+          project.some((item) => item.name === skill.name && item.missing),
+      )
+      .map((skill) => ({ kind: "add", skill })),
+  ]
     .filter(
       (operation) =>
         operation.kind === "add" &&

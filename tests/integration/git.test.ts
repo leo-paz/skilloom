@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,7 @@ describe("managed Git configuration", () => {
       const workspace = join(home, "dev");
       const project = join(workspace, "project");
       await mkdir(join(project, ".git"), { recursive: true });
+      execFileSync("git", ["init", project]);
       const output: string[] = [];
       return {
         home,

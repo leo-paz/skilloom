@@ -12,6 +12,7 @@ export interface DesiredSkill extends SkillRequirement {
 }
 
 export interface InstalledSkill {
+  missing?: boolean | undefined;
   path?: string | undefined;
   repositoryOwned?: boolean | undefined;
   name: string;
@@ -74,6 +75,8 @@ export interface InventorySkill {
 }
 
 export interface CheckoutInventory {
+  branch?: string | undefined;
+  commit?: string | undefined;
   path: string;
   skills?: InventorySkill[] | undefined;
   operations?: PlanOperation[] | undefined;
@@ -100,6 +103,7 @@ export interface MachineInventory {
   observedAt: string;
   machine: { id: string; name: string; profile: string };
   discovery: {
+    excludedWorktrees?: number | undefined;
     status: "found" | "empty" | "incomplete";
     roots: Array<{
       path: string;

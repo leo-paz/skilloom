@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -25,7 +26,10 @@ export async function isLinkedWorktree(cwd: string): Promise<boolean> {
     "--git-dir",
     "--git-common-dir",
   ]);
-  if (!dirs) return false;
+  if (!dirs)
+    throw new Error(
+      `Cannot inspect Git checkout ${cwd}; refusing to discover it.`,
+    );
   const [directory, common] = dirs.trim().split("\n");
   return Boolean(directory && common && directory !== common);
 }
@@ -36,14 +40,14 @@ export async function inspectProjectSkills(
   installed: InstalledSkill[],
 ): Promise<InstalledSkill[]> {
   const tracked = await git(cwd, ["ls-files", "-z"]);
-  if (tracked === null && (await git(cwd, ["rev-parse", "--git-dir"]))) {
+  if (tracked === null && existsSync(resolve(cwd, ".git"))) {
     throw new Error(
       `Cannot inspect tracked skills in ${cwd}; refusing to plan project changes.`,
     );
   }
   const files = tracked?.split("\0").filter(Boolean) ?? [];
   const root = await realpath(cwd);
-  return Promise.all(
+  const inspected = await Promise.all(
     installed.map(async (skill) => {
       const candidates = files.filter((file) =>
         file
@@ -70,6 +74,35 @@ export async function inspectProjectSkills(
       return { ...skill, repositoryOwned: candidates.length > 0 };
     }),
   );
+  for (const file of files) {
+    const segments = file.split("/");
+    const index = segments.indexOf("skills");
+    const name = segments[index + 1];
+    if (index < 0 || !name || inspected.some((skill) => skill.name === name))
+      continue;
+    inspected.push({
+      name,
+      scope: "project",
+      source: null,
+      agents: [],
+      repositoryOwned: true,
+      missing: true,
+    });
+  }
+  return inspected;
+}
+
+export async function projectRevision(
+  cwd: string,
+): Promise<{ branch?: string | undefined; commit?: string | undefined }> {
+  const [branch, commit] = await Promise.all([
+    git(cwd, ["symbolic-ref", "--short", "-q", "HEAD"]),
+    git(cwd, ["rev-parse", "--verify", "HEAD"]),
+  ]);
+  return {
+    ...(branch ? { branch: branch.trim() } : {}),
+    ...(commit ? { commit: commit.trim() } : {}),
+  };
 }
 
 export function protectRepositorySkills(
