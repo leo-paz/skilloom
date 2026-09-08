@@ -1,6 +1,10 @@
 import { dirname, join } from "node:path";
 import { GitAdapter } from "../adapters/git.js";
 import {
+  inspectProjectSkills,
+  protectRepositorySkills,
+} from "../adapters/project.js";
+import {
   commandForOperation,
   redactProcessOutput,
   SkillsAdapter,
@@ -25,6 +29,7 @@ interface ReconcileOptions {
 }
 
 interface PlanResult {
+  conflicts: Array<{ name: string; path: string; reason: string }>;
   operations: PlanOperation[];
   managed: Set<string>;
   statePath: string;
@@ -94,15 +99,66 @@ async function buildPlan(
     runtime.env,
   );
   const project = projectRoot
-    ? await adapter.list("project", projectRoot, runtime.env)
+    ? await inspectProjectSkills(
+        projectRoot,
+        await adapter.list("project", projectRoot, runtime.env),
+      )
     : [];
   const managed = await loadManagedState(paths.statePath);
+  const planned = planChanges(
+    desired,
+    [...global, ...project],
+    managed,
+    projectRoot,
+  );
+  const protectedNames = new Set(
+    project.filter((skill) => skill.repositoryOwned).map((skill) => skill.name),
+  );
+  const conflicts = [
+    ...planned,
+    ...desired
+      .filter(
+        (skill) =>
+          skill.scope === "project" &&
+          project.some((item) => item.name === skill.name && item.missing),
+      )
+      .map((skill) => ({ kind: "add", skill })),
+  ]
+    .filter(
+      (operation) =>
+        operation.kind === "add" &&
+        operation.skill.scope === "project" &&
+        protectedNames.has(operation.skill.name),
+    )
+    .map((operation) => ({
+      name: operation.skill.name,
+      path: projectRoot || runtime.cwd,
+      reason:
+        "Repository-owned skill differs from the requirement; update it through project Git.",
+    }));
+  for (const installed of [...global, ...project]) {
+    if (
+      !installed.repositoryOwned &&
+      (installed.source === null || installed.agents.length === 0) &&
+      desired.some(
+        (skill) =>
+          skill.scope === installed.scope && skill.name === installed.name,
+      )
+    ) {
+      conflicts.push({
+        name: installed.name,
+        path:
+          installed.scope === "global" ? "global" : projectRoot || runtime.cwd,
+        reason:
+          "Installed personal skill has unknown source or agent coverage; verify it before synchronizing.",
+      });
+    }
+  }
   return {
-    operations: planChanges(
-      desired,
-      [...global, ...project],
-      managed,
-      projectRoot,
+    conflicts,
+    operations: protectRepositorySkills(
+      planChanges(desired, [...global, ...project], managed, projectRoot),
+      project,
     ),
     managed,
     statePath: paths.statePath,
@@ -118,15 +174,20 @@ export async function showReconciliation(
 ): Promise<number> {
   const result = await buildPlan(runtime, options.configPath);
   const operations = result.operations.map(operationJson);
-  const converged = operations.length === 0;
+  const converged = operations.length === 0 && result.conflicts.length === 0;
   emit(
     runtime,
     options.json,
     command,
-    { converged, operations },
+    { converged, operations, conflicts: result.conflicts },
     converged
       ? "Skilloom is converged."
-      : result.operations.map(operationText).join("\n"),
+      : [
+          ...result.operations.map(operationText),
+          ...result.conflicts.map(
+            (conflict) => `${conflict.name}: ${conflict.reason}`,
+          ),
+        ].join("\n"),
   );
   return command === "plan" && options.check && !converged ? 2 : 0;
 }
@@ -136,6 +197,23 @@ export async function applyReconciliation(
   runtime: CliRuntime,
 ): Promise<number> {
   const result = await buildPlan(runtime, options.configPath);
+  if (result.conflicts.length) {
+    runtime.stdout(
+      options.json
+        ? JSON.stringify({
+            ok: false,
+            command: "apply",
+            converged: false,
+            conflicts: result.conflicts,
+            completed: [],
+            pending: result.operations.map(operationJson),
+          })
+        : result.conflicts
+            .map((conflict) => `${conflict.name}: ${conflict.reason}`)
+            .join("\n"),
+    );
+    return 2;
+  }
   if (result.operations.length === 0) {
     emit(
       runtime,

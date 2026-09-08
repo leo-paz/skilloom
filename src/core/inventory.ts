@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir, realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import {
+  inspectProjectSkills,
+  isLinkedWorktree,
+  projectRevision,
+  protectRepositorySkills,
+} from "../adapters/project.js";
 import { loadProjectConfig } from "./config.js";
 import { managedStateKey, planChanges } from "./plan.js";
 import { resolveDesiredState } from "./resolve.js";
@@ -55,11 +61,12 @@ interface DiscoveredCheckout {
 }
 
 interface RootResult {
+  excludedWorktrees: string[];
   root: MachineInventory["discovery"]["roots"][number];
   checkouts: string[];
 }
 
-function normalizeRemote(remote: string): string {
+export function normalizeRemote(remote: string): string {
   const trimmed = remote
     .trim()
     .replace(/\.git$/i, "")
@@ -93,9 +100,12 @@ async function scanDirectory(
   depth: number,
   maximumDepth: number,
   output: string[],
+  excludedWorktrees: string[],
 ): Promise<void> {
   if (existsSync(join(path, ".git"))) {
-    output.push(path);
+    if (await isLinkedWorktree(path))
+      excludedWorktrees.push(await realpath(path));
+    else output.push(await realpath(path));
     return;
   }
   if (depth >= maximumDepth) return;
@@ -111,6 +121,7 @@ async function scanDirectory(
       depth + 1,
       maximumDepth,
       output,
+      excludedWorktrees,
     );
   }
 }
@@ -119,9 +130,14 @@ async function scanRoot(workspace: WorkspaceRoot): Promise<RootResult> {
   const path = resolve(workspace.path);
   const root = { path, depth: workspace.depth } as RootResult["root"];
   const checkouts: string[] = [];
+  const excludedWorktrees: string[] = [];
   try {
-    await scanDirectory(path, 0, workspace.depth, checkouts);
-    return { root: { ...root, status: "scanned" }, checkouts };
+    await scanDirectory(path, 0, workspace.depth, checkouts, excludedWorktrees);
+    return {
+      root: { ...root, status: "scanned" },
+      checkouts,
+      excludedWorktrees,
+    };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     return {
@@ -131,6 +147,7 @@ async function scanRoot(workspace: WorkspaceRoot): Promise<RootResult> {
         detail: error instanceof Error ? error.message : String(error),
       },
       checkouts,
+      excludedWorktrees,
     };
   }
 }
@@ -150,6 +167,8 @@ function inventorySkills(
       scope: skill.scope,
       installed: false,
       desired: true,
+      desiredSource: skill.source,
+      desiredAgents: [...skill.agents],
       managed: false,
       reasons: [...skill.reasons],
     });
@@ -157,21 +176,44 @@ function inventorySkills(
   for (const skill of installed) {
     const key = `${skill.scope}:${skill.name}`;
     const existing = entries.get(key);
-    const isManaged = managed.has(managedStateKey(skill, projectRoot));
+    const isManaged =
+      !skill.repositoryOwned &&
+      managed.has(managedStateKey(skill, projectRoot));
     if (existing) {
-      existing.installed = true;
+      existing.installed = !skill.missing;
       existing.managed = isManaged;
-      existing.source = skill.source ?? existing.source;
-      existing.agents = [
-        ...new Set([...existing.agents, ...skill.agents]),
-      ].sort();
+      existing.source = skill.source;
+      existing.agents = [...skill.agents].sort();
+      existing.ownership = skill.repositoryOwned ? "repository" : "personal";
+      if (
+        !skill.repositoryOwned &&
+        (skill.source === null || skill.agents.length === 0)
+      ) {
+        existing.conflict =
+          "Installed personal skill has unknown source or agent coverage; verify it before synchronizing.";
+      }
+      if (
+        skill.repositoryOwned &&
+        (skill.missing ||
+          (skill.source !== null && skill.source !== existing.desiredSource) ||
+          (skill.agents.length > 0 &&
+            existing.desiredAgents?.some(
+              (agent) => !skill.agents.includes(agent),
+            )))
+      ) {
+        existing.conflict =
+          "Repository-owned skill differs from the requirement; update it through project Git.";
+      }
     } else {
       entries.set(key, {
-        ...skill,
+        name: skill.name,
+        source: skill.source,
+        scope: skill.scope,
         agents: [...skill.agents].sort(),
-        installed: true,
+        installed: !skill.missing,
         desired: false,
         managed: isManaged,
+        ownership: skill.repositoryOwned ? "repository" : "personal",
         reasons: [],
       });
     }
@@ -184,7 +226,7 @@ function inventorySkills(
 }
 
 function operationKey(operation: PlanOperation): string {
-  return `${operation.kind}:${operation.skill.scope}:${operation.skill.name}:${operation.skill.source ?? ""}`;
+  return `${operation.checkoutPath ?? ""}:${operation.kind}:${operation.skill.scope}:${operation.skill.name}:${operation.skill.source ?? ""}`;
 }
 
 export async function buildInventory(
@@ -245,10 +287,9 @@ export async function buildInventory(
     for (const checkout of checkouts.sort((left, right) =>
       left.path.localeCompare(right.path),
     )) {
-      const installed = await dependencies.listSkills(
-        "project",
+      const installed = await inspectProjectSkills(
         checkout.path,
-        request.env,
+        await dependencies.listSkills("project", checkout.path, request.env),
       );
       const manifest = await loadProjectConfig(
         join(checkout.path, ".skilloom.yaml"),
@@ -269,7 +310,12 @@ export async function buildInventory(
       for (const item of checkoutSkills) {
         const key = `${item.scope}:${item.name}`;
         const existing = skills.get(key);
-        if (!existing) skills.set(key, item);
+        if (!existing)
+          skills.set(key, {
+            ...item,
+            agents: [...item.agents],
+            reasons: [...item.reasons],
+          });
         else {
           existing.installed ||= item.installed;
           existing.desired ||= item.desired;
@@ -282,17 +328,16 @@ export async function buildInventory(
           ].sort();
         }
       }
-      const checkoutOperations = planChanges(
-        desired,
+      const checkoutOperations = protectRepositorySkills(
+        planChanges(desired, installed, request.managed, checkout.path),
         installed,
-        request.managed,
-        checkout.path,
-      );
+      ).map((operation) => ({ ...operation, checkoutPath: checkout.path }));
       for (const operation of checkoutOperations) {
         operations.set(operationKey(operation), operation);
       }
       checkoutInventories.push({
         path: checkout.path,
+        ...(await projectRevision(checkout.path)),
         skills: checkoutSkills,
         operations: checkoutOperations,
       });
@@ -325,6 +370,13 @@ export async function buildInventory(
       profile: machineConfig.profile,
     },
     discovery: {
+      ...(rootResults.some((result) => result.excludedWorktrees.length)
+        ? {
+            excludedWorktrees: new Set(
+              rootResults.flatMap((result) => result.excludedWorktrees),
+            ).size,
+          }
+        : {}),
       status: incomplete
         ? "incomplete"
         : projects.length > 0

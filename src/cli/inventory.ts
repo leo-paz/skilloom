@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { z } from "zod";
 import { GitAdapter } from "../adapters/git.js";
 import { SkillsAdapter } from "../adapters/skills.js";
 import {
@@ -17,6 +18,27 @@ import type {
   UserConfig,
 } from "../core/types.js";
 import type { CliRuntime } from "./runtime.js";
+
+const remoteProjects = z.array(
+  z.object({
+    id: z.string(),
+    name: z.string(),
+    skills: z.array(
+      z.object({
+        name: z.string(),
+        source: z.string().nullable(),
+        scope: z.enum(["global", "project"]),
+        agents: z.array(z.string()),
+        installed: z.boolean(),
+        desired: z.boolean(),
+        managed: z.boolean(),
+        reasons: z.array(z.string()),
+        ownership: z.enum(["repository", "personal"]).optional(),
+        conflict: z.string().optional(),
+      }),
+    ),
+  }),
+);
 
 async function pullManaged(
   config: UserConfig,
@@ -100,6 +122,7 @@ export async function loadCurrentInventory(
           discovery?: { projectsFound?: unknown };
           globalSkills?: unknown;
           operations?: unknown;
+          projects?: unknown;
         };
         if (
           typeof observed.observedAt !== "string" ||
@@ -111,6 +134,15 @@ export async function loadCurrentInventory(
           (candidate) => candidate.id === observed.machine?.id,
         );
         if (!machine || machine.local) continue;
+        const projects = remoteProjects.safeParse(observed.projects);
+        if (projects.success) {
+          inventory.remoteObservations ??= [];
+          inventory.remoteObservations.push({
+            machine: { id: machine.id, name: machine.name },
+            observedAt: observed.observedAt,
+            projects: projects.data,
+          });
+        }
         machine.observedAt = observed.observedAt;
         if (typeof observed.discovery?.projectsFound === "number") {
           machine.projects = observed.discovery.projectsFound;

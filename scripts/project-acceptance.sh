@@ -53,12 +53,22 @@ skills:
     name: lint
     agents: [codex]
 YAML
-./node_modules/.bin/skilloom apply --all --yes --json | tee "$acceptance_root/transition.json"
+./node_modules/.bin/skilloom sync --dry-run --json | tee "$acceptance_root/preview.json"
+test -e .agents/skills/review/SKILL.md
+test ! -e .agents/skills/lint
+./node_modules/.bin/skilloom sync --yes --json | tee "$acceptance_root/transition.json"
 test -e .agents/skills/lint/SKILL.md
 test ! -e .agents/skills/review
 npx --yes skills list --json | tee "$acceptance_root/upstream-list.json"
 node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(data.length!==1||data[0].name!=="lint") process.exit(1)' "$acceptance_root/upstream-list.json"
-./node_modules/.bin/skilloom apply --all --yes --json | tee "$acceptance_root/no-op.json"
+./node_modules/.bin/skilloom sync --yes --json | tee "$acceptance_root/no-op.json"
 node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(data.completed.length!==0||!data.converged) process.exit(1)' "$acceptance_root/no-op.json"
+
+# A previously managed installation becomes repository-owned when Git tracks it.
+git add .agents/skills/lint
+./node_modules/.bin/skilloom project remove --skill lint --json
+./node_modules/.bin/skilloom sync --yes --json | tee "$acceptance_root/tracked.json"
+test -e .agents/skills/lint/SKILL.md
+node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(data.completed.length!==0||!data.converged) process.exit(1)' "$acceptance_root/tracked.json"
 
 echo "Real project-scope acceptance passed with skills $(npx --yes skills --version)."

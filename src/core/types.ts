@@ -12,6 +12,9 @@ export interface DesiredSkill extends SkillRequirement {
 }
 
 export interface InstalledSkill {
+  missing?: boolean | undefined;
+  path?: string | undefined;
+  repositoryOwned?: boolean | undefined;
   name: string;
   source: string | null;
   agents: string[];
@@ -19,6 +22,7 @@ export interface InstalledSkill {
 }
 
 export interface PlanOperation {
+  checkoutPath?: string | undefined;
   kind: "add" | "remove";
   skill: DesiredSkill | InstalledSkill;
   reasons: string[];
@@ -56,6 +60,10 @@ export interface LocalMachine {
 }
 
 export interface InventorySkill {
+  ownership?: "repository" | "personal" | undefined;
+  desiredSource?: string | undefined;
+  desiredAgents?: string[] | undefined;
+  conflict?: string | undefined;
   name: string;
   source: string | null;
   agents: string[];
@@ -67,6 +75,8 @@ export interface InventorySkill {
 }
 
 export interface CheckoutInventory {
+  branch?: string | undefined;
+  commit?: string | undefined;
   path: string;
   skills?: InventorySkill[] | undefined;
   operations?: PlanOperation[] | undefined;
@@ -82,10 +92,18 @@ export interface ProjectInventory {
 }
 
 export interface MachineInventory {
+  remoteObservations?:
+    | Array<{
+        machine: { id: string; name: string };
+        observedAt: string;
+        projects: Array<{ id: string; name: string; skills: InventorySkill[] }>;
+      }>
+    | undefined;
   version: 1;
   observedAt: string;
   machine: { id: string; name: string; profile: string };
   discovery: {
+    excludedWorktrees?: number | undefined;
     status: "found" | "empty" | "incomplete";
     roots: Array<{
       path: string;

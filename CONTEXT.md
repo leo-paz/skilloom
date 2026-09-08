@@ -14,7 +14,7 @@ A Git repository identified by its normalized remote when available. A project m
 
 ## Checkout
 
-A local copy or worktree of a project on one machine. Several checkouts can refer to the same project.
+A local copy of a project on one machine. Several independent clones can refer to the same project. Linked Git worktrees are temporary working copies excluded from automatic workspace management.
 
 ## Profile
 
@@ -30,12 +30,24 @@ A timestamped inventory of skills and projects that Skilloom found on one machin
 
 ## Managed skill
 
-An installed skill that Skilloom is allowed to remove when it is no longer desired. Existing installations remain unmanaged until onboarding or an explicit adoption records ownership.
+A personal installation that Skilloom is allowed to remove when it is no longer desired. Existing installations remain unmanaged until onboarding or an explicit adoption records ownership. Repository ownership takes precedence over previous management records.
+
+## Repository-owned skill
+
+A project skill whose contents or installation link are tracked by that project's Git repository. Git distributes and restores it; Skilloom observes it without changing its installation.
+
+## Personal project addition
+
+A skill requirement belonging to the user for a particular repository across machines. It is distinct from requirements shared with collaborators through the project's own Git history.
 
 ## Adoption
 
-Adding an existing installation with a known source and agent target to desired policy, then recording it as managed without reinstalling it.
+Adding an existing personal installation with a known source and agent target to desired policy, then recording it as managed without reinstalling it. Divergent installations across independent clones do not establish a shared requirement.
 
 ## Drift
 
 The difference between desired policy and the latest local observation. Remote observations may be stale or absent.
+
+## Sync
+
+Bringing the current machine's personal installations and declared dependencies into agreement with shared policy, verifying the result, and reporting its observation. Policy agreement does not establish identical content revisions across machines.

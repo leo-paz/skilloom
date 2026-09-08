@@ -13,13 +13,34 @@ import type { MachineInventory, PlanOperation } from "../core/types.js";
 import { loadCurrentInventory } from "./inventory.js";
 import type { CliRuntime } from "./runtime.js";
 
-interface TargetedOperation {
+export interface TargetedOperation {
   operation: PlanOperation;
   cwd: string;
   project?: string | undefined;
 }
 
-function targets(
+export function inventoryIssues(inventory: MachineInventory): string[] {
+  const issues =
+    inventory.discovery.status === "incomplete"
+      ? [
+          "Workspace discovery is incomplete; restore access before reconciling.",
+        ]
+      : [];
+  for (const skill of inventory.globalSkills) {
+    if (skill.conflict) issues.push(`global: ${skill.name}: ${skill.conflict}`);
+  }
+  for (const project of inventory.projects) {
+    for (const checkout of project.checkouts) {
+      for (const skill of checkout.skills ?? []) {
+        if (skill.conflict)
+          issues.push(`${checkout.path}: ${skill.name}: ${skill.conflict}`);
+      }
+    }
+  }
+  return issues;
+}
+
+export function targets(
   inventory: MachineInventory,
   cwd: string,
 ): TargetedOperation[] {
@@ -41,7 +62,9 @@ function targets(
   );
 }
 
-function operationJson(target: TargetedOperation): Record<string, unknown> {
+export function operationJson(
+  target: TargetedOperation,
+): Record<string, unknown> {
   const operation = target.operation;
   return {
     kind: operation.kind,
@@ -59,7 +82,7 @@ function operationJson(target: TargetedOperation): Record<string, unknown> {
   };
 }
 
-function operationText(target: TargetedOperation): string {
+export function operationText(target: TargetedOperation): string {
   const operation = target.operation;
   return `${operation.kind.toUpperCase()} ${operation.skill.name} · ${operation.skill.scope}${target.project ? ` · ${target.project}` : ""}\n  in ${target.cwd}`;
 }
@@ -76,34 +99,58 @@ export async function showWorkspacePlan(
     throw new Error("--config requires a value");
   const inventory = await loadCurrentInventory(runtime, configPath);
   const operations = targets(inventory, runtime.cwd);
-  const converged = operations.length === 0;
+  const issues = inventoryIssues(inventory);
+  const converged = operations.length === 0 && issues.length === 0;
   runtime.stdout(
     json
       ? JSON.stringify({
-          ok: true,
+          ok: issues.length === 0,
           command,
           all: true,
           converged,
+          issues,
           operations: operations.map(operationJson),
         })
       : converged
         ? "All discovered projects are converged."
-        : operations.map(operationText).join("\n"),
+        : [...operations.map(operationText), ...issues].join("\n"),
   );
-  return command === "plan" && args.includes("--check") && !converged ? 2 : 0;
+  return issues.length > 0 ||
+    (command === "plan" && args.includes("--check") && !converged)
+    ? 2
+    : 0;
 }
 
 export async function applyWorkspacePlan(
   args: string[],
   runtime: CliRuntime,
   json: boolean,
+  currentInventory?: MachineInventory,
 ): Promise<number> {
   const configIndex = args.indexOf("--config");
   const configPath = configIndex === -1 ? undefined : args[configIndex + 1];
   if (configIndex !== -1 && !configPath)
     throw new Error("--config requires a value");
-  const inventory = await loadCurrentInventory(runtime, configPath);
+  const inventory =
+    currentInventory ?? (await loadCurrentInventory(runtime, configPath));
   const operations = targets(inventory, runtime.cwd);
+  const issues = inventoryIssues(inventory);
+  if (issues.length > 0) {
+    runtime.stdout(
+      json
+        ? JSON.stringify({
+            ok: false,
+            command: "apply",
+            all: true,
+            converged: false,
+            completed: [],
+            pending: operations.map(operationJson),
+            issues,
+          })
+        : issues.join("\n"),
+    );
+    return 2;
+  }
   if (operations.length === 0) {
     runtime.stdout(
       json
