@@ -188,10 +188,11 @@ function inventorySkills(
       if (
         skill.repositoryOwned &&
         (skill.missing ||
-          skill.source !== existing.desiredSource ||
-          existing.desiredAgents?.some(
-            (agent) => !skill.agents.includes(agent),
-          ))
+          (skill.source !== null && skill.source !== existing.desiredSource) ||
+          (skill.agents.length > 0 &&
+            existing.desiredAgents?.some(
+              (agent) => !skill.agents.includes(agent),
+            )))
       ) {
         existing.conflict =
           "Repository-owned skill differs from the requirement; update it through project Git.";

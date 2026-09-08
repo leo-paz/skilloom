@@ -21,6 +21,11 @@ describe("machine inventory", () => {
     const root = await mkdtemp(join(tmpdir(), "skilloom-tracked-missing-"));
     await mkdir(join(root, ".agents/skills/review"), { recursive: true });
     await writeFile(join(root, ".agents/skills/review/SKILL.md"), "review");
+    await mkdir(join(root, "src/skills"), { recursive: true });
+    await mkdir(join(root, "skills/source-only"), { recursive: true });
+    await writeFile(join(root, "src/skills/parser.ts"), "export {};");
+    await writeFile(join(root, "skills/README.md"), "sources");
+    await writeFile(join(root, "skills/source-only/SKILL.md"), "source only");
     execFileSync("git", ["init", root]);
     execFileSync("git", ["-C", root, "add", "."]);
     const config = emptyConfig("a");
@@ -53,6 +58,30 @@ describe("machine inventory", () => {
         conflict: expect.any(String),
       }),
     ]);
+    const present = await buildInventory(
+      {
+        machine: {
+          id: "a",
+          name: "Test",
+          workspaces: [{ path: root, depth: 1 }],
+        },
+        config,
+        managed: new Set(),
+        cwd: root,
+        env: {},
+      },
+      {
+        listSkills: async (scope) =>
+          scope === "global"
+            ? []
+            : [{ name: "review", source: null, agents: ["codex"], scope }],
+        projectRemote: async () => "https://github.com/test/repo.git",
+      },
+    );
+    expect(
+      present.projects[0]?.checkouts[0]?.skills[0]?.conflict,
+    ).toBeUndefined();
+    expect(present.projects[0]?.checkouts[0]?.skills[0]?.installed).toBe(true);
   });
   it("excludes linked worktrees and protects tracked skills despite stale management", async () => {
     const root = await mkdtemp(join(tmpdir(), "skilloom-git-inventory-"));

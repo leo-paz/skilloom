@@ -6,6 +6,38 @@ import { promisify } from "node:util";
 import type { InstalledSkill, PlanOperation } from "../core/types.js";
 
 const execute = promisify(execFile);
+const installationRoots = new Set([
+  ".agents",
+  ".agent",
+  ".claude",
+  ".codex",
+  ".cursor",
+  ".github",
+  ".opencode",
+  ".windsurf",
+  ".cline",
+  ".roo",
+  ".gemini",
+  ".goose",
+  ".kiro",
+  ".trae",
+  ".augment",
+  ".continue",
+]);
+
+function installationName(
+  file: string,
+  links: Set<string>,
+): string | undefined {
+  const [root, directory, name, ...rest] = file.split("/");
+  return root &&
+    installationRoots.has(root) &&
+    directory === "skills" &&
+    name &&
+    (rest.length > 0 || links.has(file))
+    ? name
+    : undefined;
+}
 
 async function git(cwd: string, args: string[]): Promise<string | null> {
   try {
@@ -39,23 +71,24 @@ export async function inspectProjectSkills(
   cwd: string,
   installed: InstalledSkill[],
 ): Promise<InstalledSkill[]> {
-  const tracked = await git(cwd, ["ls-files", "-z"]);
+  const tracked = await git(cwd, ["ls-files", "--stage", "-z"]);
   if (tracked === null && existsSync(resolve(cwd, ".git"))) {
     throw new Error(
       `Cannot inspect tracked skills in ${cwd}; refusing to plan project changes.`,
     );
   }
-  const files = tracked?.split("\0").filter(Boolean) ?? [];
+  const records = tracked?.split("\0").filter(Boolean) ?? [];
+  const files = records.map((record) => record.slice(record.indexOf("\t") + 1));
+  const links = new Set(
+    records
+      .filter((record) => record.startsWith("120000 "))
+      .map((record) => record.slice(record.indexOf("\t") + 1)),
+  );
   const root = await realpath(cwd);
   const inspected = await Promise.all(
     installed.map(async (skill) => {
-      const candidates = files.filter((file) =>
-        file
-          .split("/")
-          .some(
-            (part, index, parts) =>
-              part === "skills" && parts[index + 1] === skill.name,
-          ),
+      const candidates = files.filter(
+        (file) => installationName(file, links) === skill.name,
       );
       if (skill.path) {
         const path = resolve(cwd, skill.path);
@@ -75,11 +108,8 @@ export async function inspectProjectSkills(
     }),
   );
   for (const file of files) {
-    const segments = file.split("/");
-    const index = segments.indexOf("skills");
-    const name = segments[index + 1];
-    if (index < 0 || !name || inspected.some((skill) => skill.name === name))
-      continue;
+    const name = installationName(file, links);
+    if (!name || inspected.some((skill) => skill.name === name)) continue;
     inspected.push({
       name,
       scope: "project",
