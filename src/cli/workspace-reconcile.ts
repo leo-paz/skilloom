@@ -26,6 +26,9 @@ export function inventoryIssues(inventory: MachineInventory): string[] {
           "Workspace discovery is incomplete; restore access before reconciling.",
         ]
       : [];
+  for (const skill of inventory.globalSkills) {
+    if (skill.conflict) issues.push(`global: ${skill.name}: ${skill.conflict}`);
+  }
   for (const project of inventory.projects) {
     for (const checkout of project.checkouts) {
       for (const skill of checkout.skills ?? []) {

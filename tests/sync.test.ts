@@ -146,6 +146,15 @@ it("syncs shared policy into each machine and publishes verified observations th
   const two = await machine("two");
   expect(
     await runCli(
+      ["add", "local-only", "--source", root, "--json"],
+      one.runtime,
+    ),
+  ).toBe(3);
+  expect(JSON.parse(one.output.at(-1) ?? "{}").error.message).toContain(
+    "local skill sources",
+  );
+  expect(
+    await runCli(
       ["add", "review", "--source", "acme/skills", "--json"],
       one.runtime,
     ),
@@ -215,6 +224,15 @@ it("targets personal project additions by remote and writes shared requirements 
   );
   expect(config.projects["github.com/acme/core"]?.skills).toEqual([
     { name: "review", source: "acme/skills", agents: ["codex"] },
+  ]);
+  expect(
+    await runCli(["sync", "--dry-run", "--json"], { ...runtime, cwd: home }),
+  ).toBe(0);
+  expect(JSON.parse(output.at(-1) ?? "{}").operations).toEqual([
+    expect.objectContaining({
+      name: "review",
+      project: "github.com/acme/core",
+    }),
   ]);
   expect(
     await loadProjectConfig(join(project, ".skilloom.yaml")),

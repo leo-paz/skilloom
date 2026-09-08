@@ -1,16 +1,20 @@
+import { existsSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { dirname } from "node:path";
 import { GitAdapter } from "../adapters/git.js";
 import { isLinkedWorktree } from "../adapters/project.js";
 import {
   findProjectRoot,
   loadInventorySnapshot,
+  loadLocalMachine,
   loadMachineId,
   loadUserConfig,
   resolveConfigPaths,
+  saveLocalMachine,
   saveUserConfig,
 } from "../core/config.js";
 import { normalizeRemote } from "../core/inventory.js";
-import { isValidSkillSource } from "../core/schema.js";
+import { isLocalSkillSource, isValidSkillSource } from "../core/schema.js";
 import type { SkillRequirement, UserConfig } from "../core/types.js";
 import { editProject } from "./configuration.js";
 import { loadCurrentInventory } from "./inventory.js";
@@ -91,6 +95,25 @@ function agents(args: string[]): string[] | undefined {
   return parsed;
 }
 
+async function enrollProject(
+  root: string,
+  runtime: CliRuntime,
+  explicitConfig?: string,
+): Promise<void> {
+  const paths = resolveConfigPaths(runtime.env, explicitConfig);
+  if (!existsSync(paths.configPath) || !existsSync(paths.machineIdPath)) return;
+  const config = await loadUserConfig(paths.configPath);
+  const id = await loadMachineId(paths.machineIdPath);
+  const projectRoot = await realpath(root);
+  const machine = existsSync(paths.machinePath)
+    ? await loadLocalMachine(paths.machinePath)
+    : { id, name: config.machines[id]?.name ?? id, workspaces: [] };
+  if (!machine.workspaces.some((workspace) => workspace.path === projectRoot)) {
+    machine.workspaces.push({ path: projectRoot, depth: 1 });
+    await saveLocalMachine(paths.machinePath, machine);
+  }
+}
+
 async function pullManaged(
   config: UserConfig,
   path: string,
@@ -132,7 +155,7 @@ export async function editPolicy(
     const requestedAgents = agents(args);
     const source = option(args, "--source");
     if (!source) throw new Error("add requires --source");
-    return editProject(
+    const result = await editProject(
       "add",
       [
         "--skill",
@@ -145,6 +168,10 @@ export async function editPolicy(
       runtime,
       json,
     );
+    const root = findProjectRoot(runtime.cwd);
+    if (root && !(await isLinkedWorktree(root)))
+      await enrollProject(root, runtime, option(args, "--config"));
+    return result;
   }
   const paths = resolveConfigPaths(runtime.env, option(args, "--config"));
   let config = await pullManaged(
@@ -153,6 +180,16 @@ export async function editPolicy(
   );
   let sourceTarget = option(args, command === "edit" ? "--in" : "--from");
   let destinationTarget = option(args, "--to");
+  let projectRoot: string | undefined;
+  const requestedSource = option(args, "--source");
+  if (
+    config.storage.mode === "managed" &&
+    requestedSource &&
+    isLocalSkillSource(requestedSource)
+  )
+    throw new Error(
+      "managed configuration cannot publish local skill sources; use a repository source",
+    );
   const resolveTarget = async (
     value: string | undefined,
   ): Promise<string | undefined> => {
@@ -204,6 +241,7 @@ export async function editPolicy(
         "--project requires an origin remote to identify this repository across machines",
       );
     destinationTarget = `project:${normalizeRemote(remote.stdout.trim())}`;
+    projectRoot = await realpath(root);
   }
   if (command === "add" && !destinationTarget) {
     const id = await loadMachineId(paths.machineIdPath);
@@ -275,6 +313,9 @@ export async function editPolicy(
     }
   }
 
+  if (projectRoot) {
+    await enrollProject(projectRoot, runtime, option(args, "--config"));
+  }
   await saveUserConfig(paths.configPath, config);
   if (config.storage.mode === "managed") {
     await new GitAdapter().commitAndPush(

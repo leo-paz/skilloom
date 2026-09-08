@@ -11,7 +11,7 @@ import {
   saveUserConfig,
   writeLocator,
 } from "../core/config.js";
-import { isValidSkillSource } from "../core/schema.js";
+import { isLocalSkillSource, isValidSkillSource } from "../core/schema.js";
 import type { UserConfig } from "../core/types.js";
 import type { CliRuntime } from "./runtime.js";
 
@@ -263,6 +263,10 @@ export async function configureProfiles(
       throw new Error("config --add-skill requires an existing --to-profile");
     }
     if (!sourceValue) throw new Error("config --add-skill requires --source");
+    if (config.storage.mode === "managed" && isLocalSkillSource(sourceValue))
+      throw new Error(
+        "managed configuration cannot publish local skill sources; use a repository source",
+      );
     if (
       config.profiles[profileName].skills.some((skill) => skill.name === name)
     ) {
