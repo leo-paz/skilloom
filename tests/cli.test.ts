@@ -1,10 +1,22 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ProcessResult } from "../src/adapters/skills.js";
 import { type CliRuntime, runCli } from "../src/cli/app.js";
 import { loadUserConfig, saveUserConfig } from "../src/core/config.js";
+
+async function initializeGit(path: string): Promise<void> {
+  await mkdir(path, { recursive: true });
+  execFileSync("git", ["init", "-q", path]);
+}
 
 function runtime(home: string): {
   value: CliRuntime;
@@ -53,6 +65,49 @@ async function setGlobalSkills(home: string, names: string[]): Promise<void> {
 }
 
 describe("CLI", () => {
+  it("does not spread a skill from one independent clone to another during adoption", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-clones-"));
+    const first = join(home, "dev", "first");
+    const second = join(home, "dev", "second");
+    await initializeGit(first);
+    await initializeGit(second);
+    const test = runtime(home);
+    test.value.run = async (executable, args, options) => {
+      if (executable === "git")
+        return {
+          code: 0,
+          stdout: "git@github.com:acme/project.git",
+          stderr: "",
+        };
+      return {
+        code: 0,
+        stderr: "",
+        stdout: JSON.stringify(
+          args.includes("list") &&
+            !args.includes("--global") &&
+            options.cwd === first
+            ? [
+                {
+                  name: "review",
+                  source: "acme/skills",
+                  agents: ["codex"],
+                  scope: "project",
+                },
+              ]
+            : [],
+        ),
+      };
+    };
+    expect(
+      await runCli(["setup", join(home, "dev"), "--json"], test.value),
+    ).toBe(0);
+    const config = await loadUserConfig(
+      join(home, ".config", "skilloom", "config.yaml"),
+    );
+    expect(config.projects).toEqual({});
+    expect(await runCli(["plan", "--all", "--json"], test.value)).toBe(0);
+    expect(JSON.parse(test.out.at(-1) ?? "{}").operations).toEqual([]);
+  });
   it("reports the version published in package metadata", async () => {
     const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
     const test = runtime(home);
@@ -82,9 +137,7 @@ describe("CLI", () => {
     const home = await mkdtemp(join(tmpdir(), "skilloom-setup-"));
     const workspace = join(home, "dev");
     const project = join(workspace, "personal", "skilloom");
-    await import("node:fs/promises").then(({ mkdir }) =>
-      mkdir(join(project, ".git"), { recursive: true }),
-    );
+    await initializeGit(project);
     const test = runtime(home);
     const mutations: string[][] = [];
     test.value.run = async (executable, args) => {
@@ -170,7 +223,7 @@ describe("CLI", () => {
     expect(JSON.parse(test.out.at(-1) ?? "{}")).toMatchObject({
       ok: true,
       command: "observe",
-      changed: true,
+      changed: false,
       published: false,
     });
     expect(
@@ -232,10 +285,12 @@ describe("CLI", () => {
   });
 
   it("plans and applies desired state across discovered project checkouts", async () => {
-    const home = await mkdtemp(join(tmpdir(), "skilloom-workspace-apply-"));
+    const home = await realpath(
+      await mkdtemp(join(tmpdir(), "skilloom-workspace-apply-")),
+    );
     const workspace = join(home, "dev");
     const project = join(workspace, "personal", "skilloom");
-    await mkdir(join(project, ".git"), { recursive: true });
+    await initializeGit(project);
     const test = runtime(home);
     const executions: Array<{ args: string[]; cwd: string }> = [];
     test.value.run = async (executable, args, options) => {
@@ -310,7 +365,7 @@ describe("CLI", () => {
     expect(test.out.at(-1)).toContain("--no-adopt");
 
     expect(await runCli(["add", "--help"], test.value)).toBe(0);
-    expect(test.out.at(-1)).toContain("--to profile:NAME|project:ID");
+    expect(test.out.at(-1)).toContain("profile:NAME or project:ID");
   });
 
   it("returns a JSON error envelope for invalid commands", async () => {
@@ -440,7 +495,25 @@ describe("CLI", () => {
         machine: { id: "remote", name: "Leo's MacBook", profile: "default" },
         discovery: { status: "found", projectsFound: 4, checkoutsFound: 4 },
         globalSkills: [{ name: "review", installed: true }],
-        projects: [],
+        projects: [
+          {
+            id: "github.com/acme/Core",
+            name: "Core",
+            skills: [
+              {
+                name: "review",
+                source: null,
+                scope: "project",
+                agents: ["codex"],
+                installed: true,
+                desired: false,
+                managed: false,
+                reasons: [],
+                ownership: "repository",
+              },
+            ],
+          },
+        ],
         operations: [],
       }),
     );
@@ -457,6 +530,19 @@ describe("CLI", () => {
         }),
       ]),
     );
+    expect(
+      JSON.parse(test.out.at(-1) ?? "{}").remoteObservations,
+    ).toMatchObject([
+      {
+        machine: { id: "remote" },
+        projects: [
+          {
+            name: "Core",
+            skills: [{ name: "review", ownership: "repository" }],
+          },
+        ],
+      },
+    ]);
   });
 
   it("connects to an existing external config and assigns this machine", async () => {
@@ -519,9 +605,7 @@ describe("CLI", () => {
     ).toContain("name: review");
 
     const project = await mkdtemp(join(tmpdir(), "skilloom-project-"));
-    await import("node:fs/promises").then(({ mkdir }) =>
-      mkdir(join(project, ".git"), { recursive: true }),
-    );
+    await initializeGit(project);
     test.value.cwd = project;
     expect(
       await runCli(
@@ -626,9 +710,7 @@ describe("CLI", () => {
     const test = runtime(home);
     await runCli(["init", "--yes"], test.value);
     const project = await mkdtemp(join(tmpdir(), "skilloom-project-"));
-    await import("node:fs/promises").then(({ mkdir }) =>
-      mkdir(join(project, ".git"), { recursive: true }),
-    );
+    await initializeGit(project);
     test.value.cwd = project;
 
     expect(await runCli(["doctor", "--json"], test.value)).toBe(0);

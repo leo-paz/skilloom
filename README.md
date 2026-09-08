@@ -19,11 +19,11 @@ bunx --bun skilloom@canary setup ~/dev
 bunx --bun skilloom@canary
 ```
 
-`setup` scans Git repositories up to three directories beneath `~/dev`. It asks the upstream `skills` CLI for global installations and for project installations in every repository it finds. Installations with a known source and agent are adopted without being reinstalled; unknown installations remain visible and unmanaged.
+`setup` scans Git repositories up to three directories beneath `~/dev`, excluding linked Git worktrees. Independent clones remain separate installation targets. It inspects global and project installations through the upstream `skills` CLI. Known-source personal installations are eligible for adoption; Git-tracked skill files belong to the repository and remain under Git's control. Skills that differ between independent clones stay unmanaged instead of being copied between clones.
 
 If you omit the workspace, Skilloom uses existing conventional roots such as `~/dev`, `~/Developer`, `~/projects`, `~/code`, and `~/src`. It does not scan the whole home directory.
 
-The bare command opens the terminal dashboard. An agent can inspect the same state without prompts:
+The bare command opens the terminal dashboard from the saved observation when available, displaying its timestamp. Refresh explicitly to check current state. View skills selects a project and shows its local checkouts and published observations from other machines. An agent can inspect current state without prompts:
 
 ```sh
 bunx --bun skilloom@canary inventory --json
@@ -35,10 +35,10 @@ No projects is a valid result. Add a workspace later by rerunning `setup /path/t
 
 ## Add and change skills
 
-Global policy lives in profiles. A machine is assigned to one profile:
+Global policy lives in profiles. A machine is assigned to one profile, which is the default destination for `add`:
 
 ```sh
-skilloom add code-review tdd --source mattpocock/skills --to profile:default
+skilloom add code-review tdd --source mattpocock/skills
 skilloom edit tdd --in profile:default --agents codex,claude-code
 skilloom move tdd --from profile:default --to project:skilloom
 skilloom remove tdd --from project:skilloom
@@ -46,14 +46,29 @@ skilloom remove tdd --from project:skilloom
 
 Project targets accept a canonical repository identity such as `project:github.com/leo-paz/skilloom` or an unambiguous short name such as `project:skilloom`.
 
-These commands change desired policy; they do not immediately mutate installations. Review and apply all local changes explicitly:
+These commands change desired policy; they do not immediately mutate installations. Sync pulls shared policy, previews changes, installs locally, verifies the result, and publishes an observation when Git storage is connected:
 
 ```sh
-skilloom plan --all --json
-skilloom apply --all --yes --json
+skilloom sync --dry-run --json
+skilloom sync --yes --json
 ```
 
-Shared project policy can be committed as `.skilloom.yaml`:
+For a personal requirement that follows the same repository across your machines, run this inside the repository:
+
+```sh
+skilloom add code-review --source mattpocock/skills --project
+skilloom sync
+```
+
+The repository's remote identifies the project, so local paths may differ. Machines without that repository skip it. Explicit project policy targets every discovered independent clone; each operation names its exact path. `--project` requires a remote and rejects linked worktrees.
+
+Add `--shared` to write `.skilloom.yaml` for collaborators, then commit the file through your normal Git workflow:
+
+```sh
+skilloom add code-review --source mattpocock/skills --project --shared
+```
+
+Shared project policy can also be written directly:
 
 ```yaml
 version: 1
@@ -70,7 +85,9 @@ skilloom project add --source acme/agent-skills --skill repository-review --agen
 skilloom project remove --skill repository-review
 ```
 
-Project policy is additive. Skilloom only removes a project installation when its local state records that Skilloom previously added or adopted it. The upstream CLI continues to own `.agents/skills` and `skills-lock.json`.
+Project policy is additive. Git-tracked skill contents and tracked skill links are repository-owned: Skilloom displays them but does not overwrite or remove them, even if old state recorded them as managed. Conflicting requirements block synchronization. Git distributes those tracked files; Skilloom never pulls your project repositories. A manifest whose skill files are untracked can declare dependencies that Skilloom installs.
+
+Personal installations are removable only when local state records Skilloom ownership. The upstream CLI performs installation and maintains `skills-lock.json`.
 
 ## Multiple machines
 
@@ -85,6 +102,20 @@ skilloom setup ~/dev --sync git@github.com:you/skilloom-config.git --machine-nam
 ```
 
 Each machine has its own workspace paths and stable identity. Those paths stay local. Profiles, personal project policy, machine names, and assignments are shared.
+
+For an existing local setup, connect it without resetting installation state or machine identity:
+
+```sh
+skilloom connect git@github.com:you/skilloom-config.git
+skilloom sync --dry-run --json
+skilloom sync --yes --json
+```
+
+The repository must already exist and be accessible through your Git credentials. `connect` retains a local configuration backup and switches storage only after successful publication. Identical or disjoint configuration entries merge; conflicting entries require resolution. Local-only sources and project identities cannot be shared. Connecting does not repair policies previously created by older adoption behavior: inspect existing requirements before applying them.
+
+Run `sync` on each machine. It never triggers execution on another computer. Without `--yes`, interactive sync previews installation changes and asks for confirmation; noninteractive mutation returns cancellation. `--dry-run` can fetch shared configuration but never installs or publishes an observation. Failed verification returns exit code 2 with pending work; failed upstream execution returns 4. An incomplete scan or repository ownership conflict blocks application.
+
+Sync compares skill name, source, and agent coverage. It does not upgrade content, pin identical revisions across machines, or detect edits to untracked skill contents. Use an explicit `update` on each machine for source updates. Exact content revision tracking is not implemented, so convergence is a policy result, not proof of identical file contents.
 
 `inventory` always observes the current machine. A machine can publish a path-redacted snapshot so the dashboard on another machine can show its last known state:
 
@@ -110,12 +141,9 @@ skilloom inventory --json
 # 3. Make one atomic desired-policy change.
 skilloom add research tdd --source mattpocock/skills --to profile:default --json
 
-# 4. Review and apply this machine's global and project changes.
-skilloom plan --all --json
-skilloom apply --all --yes --json
-
-# 5. Optionally publish an observation when managed storage is configured.
-skilloom observe --publish --json
+# 4. Review, then reconcile and publish this machine's result.
+skilloom sync --dry-run --json
+skilloom sync --yes --json
 ```
 
 JSON failures use `{ "ok": false, "error": { "code": "...", "message": "..." } }`. `plan --check` returns `0` when converged and `2` for drift. Invalid input returns `3`, upstream execution failure returns `4`, and cancellation returns `5`.
@@ -157,9 +185,11 @@ Managed mode uses the user's existing Git credentials and permits only fast-forw
 ## Command summary
 
 - `setup [WORKSPACE]` initializes a machine, discovers projects, and adopts eligible existing skills.
+- `connect REPOSITORY` migrates local configuration into shared Git storage with a backup.
+- `sync [--dry-run] [--yes]` reconciles and verifies this machine, then publishes its observation when connected.
 - `inventory` reports machines and profiles plus this machine's projects, installations, ownership, and drift.
 - `add`, `edit`, `move`, and `remove` atomically edit global-profile or personal-project policy.
-- `plan --all` and `apply --all` reconcile every discovered checkout plus global state.
+- `plan --all` and `apply --all` remain available for separate planning and application to independent clones plus global state.
 - `observe [--publish]` refreshes local state and optionally publishes a redacted snapshot.
 - `update [SKILL...] --scope global|project` delegates updates to `npx skills update`.
 - `project add` and `project remove` edit shared `.skilloom.yaml` policy.

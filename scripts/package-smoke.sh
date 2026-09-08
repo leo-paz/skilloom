@@ -52,8 +52,10 @@ run_suite() {
   "${command[@]}" --version
   "${command[@]}" setup "$project" --machine-name "Package smoke" --no-adopt --json
   "${command[@]}" inventory --json
+  "${command[@]}" sync --yes --json
   "${command[@]}" add review tdd --source acme/skills --to profile:default --json
   "${command[@]}" plan --all --json
+  "${command[@]}" sync --dry-run --json
   "${command[@]}" apply --all --yes --json
   "${command[@]}" observe --json
   "${command[@]}" doctor --json

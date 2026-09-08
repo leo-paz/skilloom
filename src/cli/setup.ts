@@ -8,6 +8,7 @@ import {
   loadManagedState,
   loadUserConfig,
   resolveConfigPaths,
+  saveInventorySnapshot,
   saveLocalMachine,
   saveManagedState,
   saveUserConfig,
@@ -193,21 +194,32 @@ export async function setupMachine(
 
   const managed = await loadManagedState(paths.statePath);
   const skills = new SkillsAdapter(runtime.run);
-  const inventory = await buildInventory(
-    { machine, config, managed, cwd: runtime.cwd, env: runtime.env },
-    {
-      listSkills: (scope, cwd, env) => skills.list(scope, cwd, env),
-      projectRemote: async (cwd) => {
-        const result = await runtime.run(
-          "git",
-          ["config", "--get", "remote.origin.url"],
-          { cwd, env: runtime.env },
-        );
-        return result.code === 0 && result.stdout.trim()
-          ? result.stdout.trim()
-          : null;
-      },
+  const observed = new Map<string, InstalledSkill[]>();
+  const dependencies = {
+    listSkills: async (
+      scope: "global" | "project",
+      cwd: string,
+      env: NodeJS.ProcessEnv,
+    ) => {
+      const key = `${scope}:${cwd}`;
+      if (!observed.has(key))
+        observed.set(key, await skills.list(scope, cwd, env));
+      return observed.get(key)!;
     },
+    projectRemote: async (cwd: string) => {
+      const result = await runtime.run(
+        "git",
+        ["config", "--get", "remote.origin.url"],
+        { cwd, env: runtime.env },
+      );
+      return result.code === 0 && result.stdout.trim()
+        ? result.stdout.trim()
+        : null;
+    },
+  };
+  let inventory = await buildInventory(
+    { machine, config, managed, cwd: runtime.cwd, env: runtime.env },
+    dependencies,
   );
 
   let adopted = 0;
@@ -234,7 +246,18 @@ export async function setupMachine(
         : projectRoots.map((root) => managedStateKey(installed, root));
     const alreadyManaged =
       stateKeys.length > 0 && stateKeys.every((key) => managed.has(key));
-    if (!requirements.some((skill) => skill.name === installed.name)) {
+    const existing = requirements.find(
+      (skill) => skill.name === installed.name,
+    );
+    if (
+      existing &&
+      (existing.source !== installed.source ||
+        existing.agents.some((agent) => !installed.agents.includes(agent)))
+    ) {
+      unmanaged += 1;
+      return;
+    }
+    if (!existing) {
       requirements.push({
         source: installed.source,
         name: installed.name,
@@ -251,31 +274,44 @@ export async function setupMachine(
     (skill) => skill.installed,
   )) {
     adopt(skill, profile.skills);
-    if (shouldAdopt && skill.source && skill.agents.length > 0) {
-      skill.desired = true;
-      skill.managed = true;
-      skill.reasons = [`machine profile ${selectedProfile}`];
-    }
   }
   for (const project of inventory.projects) {
     const policy = config.projects[project.id] ?? { skills: [] };
     for (const skill of project.skills.filter((skill) => skill.installed)) {
+      const instances = project.checkouts.map((checkout) =>
+        checkout.skills?.find(
+          (candidate) => candidate.name === skill.name && candidate.installed,
+        ),
+      );
+      const consistent = instances.every(
+        (candidate) =>
+          candidate &&
+          candidate.ownership !== "repository" &&
+          candidate.source === skill.source &&
+          candidate.agents.length === skill.agents.length &&
+          skill.agents.every((agent) => candidate.agents.includes(agent)),
+      );
+      if (!consistent) {
+        unmanaged += 1;
+        continue;
+      }
       adopt(
         skill,
         policy.skills,
         project.checkouts.map((checkout) => checkout.path),
       );
-      if (shouldAdopt && skill.source && skill.agents.length > 0) {
-        skill.desired = true;
-        skill.managed = true;
-        skill.reasons = ["personal project additions"];
-      }
     }
-    config.projects[project.id] = policy;
+    if (policy.skills.length > 0 || policy.profile)
+      config.projects[project.id] = policy;
   }
 
   await saveUserConfig(paths.configPath, config);
   await saveManagedState(paths.statePath, managed);
+  inventory = await buildInventory(
+    { machine, config, managed, cwd: runtime.cwd, env: runtime.env },
+    dependencies,
+  );
+  await saveInventorySnapshot(paths.inventoryPath, inventory);
   if (config.storage.mode === "managed") {
     await new GitAdapter().commitAndPush(
       dirname(paths.configPath),

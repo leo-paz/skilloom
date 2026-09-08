@@ -8,6 +8,7 @@ import {
 } from "../adapters/skills.js";
 import {
   findProjectRoot,
+  loadInventorySnapshot,
   loadUserConfig,
   resolveConfigPaths,
 } from "../core/config.js";
@@ -17,12 +18,14 @@ import {
   initializeConfiguration,
   initializeProject,
 } from "./configuration.js";
+import { connectConfiguration } from "./connect.js";
 import { showInventory } from "./inventory.js";
 import { observeMachine } from "./observe.js";
 import { editPolicy } from "./policy.js";
 import { applyReconciliation, showReconciliation } from "./reconcile.js";
 import { type CliRuntime, defaultRuntime } from "./runtime.js";
 import { setupMachine } from "./setup.js";
+import { syncMachine } from "./sync.js";
 import {
   applyWorkspacePlan,
   showWorkspacePlan,
@@ -38,6 +41,8 @@ Usage: skilloom <command> [options]
 
 Commands:
   skilloom setup [DIR]      Discover projects and adopt existing skills
+  skilloom connect REPO     Connect existing configuration to shared Git storage
+  skilloom sync             Reconcile this machine and publish its status
   skilloom inventory        Show machines, projects, skills, and drift
   skilloom add NAME...      Add desired policy atomically
   skilloom edit NAME        Edit desired policy atomically
@@ -63,6 +68,12 @@ Common options:
   --version                 Show the version`;
 
 const commandHelp: Record<string, string> = {
+  connect: `Usage: skilloom connect REPOSITORY [--json]
+
+Connect local configuration to a shared Git repository, preserving machine identity and a local backup. Conflicting configuration entries require resolution.`,
+  sync: `Usage: skilloom sync [--dry-run] [--yes] [--json]
+
+Pull shared policy, reconcile local installations, verify, and publish status. Linked worktrees and repository-owned skill files are excluded from mutation. Does not upgrade skill revisions or pull project repositories.`,
   setup: `Usage: skilloom setup [WORKSPACE] [options]
 
 Discover Git projects, inspect existing installations through the skills CLI, and adopt eligible skills without reinstalling them.
@@ -79,9 +90,12 @@ Options:
   inventory: `Usage: skilloom inventory [--json]
 
 Show configured machines and profiles plus this machine's discovered projects, installed skills, ownership, and drift.`,
-  add: `Usage: skilloom add NAME... --source SOURCE --to profile:NAME|project:ID [options]
+  add: `Usage: skilloom add NAME... --source SOURCE [options]
 
 Options:
+  --to <target>            Explicit profile:NAME or project:ID; default current profile
+  --project                Personal requirement for the current repository
+  --shared                 With --project, write the repository's .skilloom.yaml
   --agent <name>            Target agent, default codex
   --agents <a,b>            Target several agents
   --json                    Emit the saved policy change`,
@@ -111,6 +125,8 @@ export const commandContract = defineCommand({
     [
       "init",
       "setup",
+      "connect",
+      "sync",
       "inventory",
       "add",
       "edit",
@@ -332,6 +348,10 @@ export async function runCli(
       return 0;
     }
     const command = rawArgs[0];
+    if (command === "connect")
+      return await connectConfiguration(rawArgs.slice(1), runtime, json);
+    if (command === "sync")
+      return await syncMachine(rawArgs.slice(1), runtime, json);
     if (command === "init")
       return await initializeConfiguration(rawArgs.slice(1), runtime, json);
     if (command === "setup")
@@ -420,5 +440,9 @@ async function showInventoryForDashboard(
   runtime: CliRuntime,
 ): Promise<import("../core/types.js").MachineInventory> {
   const { loadCurrentInventory } = await import("./inventory.js");
-  return loadCurrentInventory(runtime);
+  const paths = resolveConfigPaths(runtime.env);
+  return (
+    (await loadInventorySnapshot(paths.inventoryPath)) ??
+    loadCurrentInventory(runtime)
+  );
 }

@@ -56,6 +56,7 @@ describe("terminal dashboard", () => {
     };
 
     expect(renderDashboard(inventory)).toBe(`Leo's Mac mini · profile default
+Observed 2026-08-26T12:00:00.000Z · refresh to check current state
 Global · ● code-review
 Drift · 1 pending change
 
@@ -64,6 +65,6 @@ Machines
 ○ Leo's MacBook · default · not observed
 
 Projects
-skilloom · no skills · synced`);
+skilloom · 0 skills · 1 clone · no planned changes`);
   });
 });

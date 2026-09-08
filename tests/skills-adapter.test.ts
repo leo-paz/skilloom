@@ -14,6 +14,7 @@ describe("skills adapter", () => {
     ).toEqual([
       {
         name: "review",
+        path: "/tmp/review",
         source: "acme/skills",
         scope: "project",
         agents: ["codex"],
