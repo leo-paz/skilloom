@@ -287,7 +287,12 @@ export async function buildInventory(
       for (const item of checkoutSkills) {
         const key = `${item.scope}:${item.name}`;
         const existing = skills.get(key);
-        if (!existing) skills.set(key, item);
+        if (!existing)
+          skills.set(key, {
+            ...item,
+            agents: [...item.agents],
+            reasons: [...item.reasons],
+          });
         else {
           existing.installed ||= item.installed;
           existing.desired ||= item.desired;
