@@ -184,11 +184,11 @@ it("targets personal project additions by remote and writes shared requirements 
   const home = await mkdtemp(join(tmpdir(), "skilloom-project-add-"));
   const project = join(home, "core");
   await mkdir(project, { recursive: true });
-  await runProcess("git", ["init"], { cwd: project });
+  await runProcess("git", ["init"], { cwd: project, env: {} });
   await runProcess(
     "git",
     ["remote", "add", "origin", "git@github.com:acme/core.git"],
-    { cwd: project },
+    { cwd: project, env: {} },
   );
   const output: string[] = [];
   const runtime: CliRuntime = {
@@ -198,7 +198,10 @@ it("targets personal project additions by remote and writes shared requirements 
     stdout: (line) => output.push(line),
     stderr: (line) => output.push(line),
     confirm: async () => true,
-    run: runProcess,
+    run: (executable, args, options) =>
+      executable === "git"
+        ? runProcess(executable, args, options)
+        : Promise.resolve({ code: 0, stdout: "[]", stderr: "" }),
   };
   expect(await runCli(["init", "--yes", "--json"], runtime)).toBe(0);
   expect(
@@ -241,4 +244,56 @@ it("targets personal project additions by remote and writes shared requirements 
       agents: ["claude-code", "codex"],
     },
   ]);
+  expect(
+    await runCli(
+      [
+        "add",
+        "unknown",
+        "--source",
+        "acme/skills",
+        "--to",
+        "project:unknown",
+        "--json",
+      ],
+      runtime,
+    ),
+  ).toBe(3);
+  expect(JSON.parse(output.at(-1) ?? "{}").error.message).toContain(
+    "was not discovered",
+  );
+  await runProcess(
+    "git",
+    [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "Seed",
+    ],
+    { cwd: project, env: {} },
+  );
+  const linked = join(home, "linked");
+  await runProcess("git", ["worktree", "add", "-b", "linked", linked], {
+    cwd: project,
+    env: {},
+  });
+  expect(
+    await runCli(
+      [
+        "add",
+        "worktree-only",
+        "--source",
+        "acme/skills",
+        "--project",
+        "--json",
+      ],
+      { ...runtime, cwd: linked },
+    ),
+  ).toBe(3);
+  expect(JSON.parse(output.at(-1) ?? "{}").error.message).toContain(
+    "linked worktree",
+  );
 });

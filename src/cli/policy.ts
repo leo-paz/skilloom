@@ -1,5 +1,6 @@
 import { dirname } from "node:path";
 import { GitAdapter } from "../adapters/git.js";
+import { isLinkedWorktree } from "../adapters/project.js";
 import {
   findProjectRoot,
   loadInventorySnapshot,
@@ -189,6 +190,10 @@ export async function editPolicy(
       throw new Error("--project requires add without --to");
     const root = findProjectRoot(runtime.cwd);
     if (!root) throw new Error("--project must run inside a Git repository");
+    if (await isLinkedWorktree(root))
+      throw new Error(
+        "--project cannot enroll a linked worktree; run it from an independent clone",
+      );
     const remote = await runtime.run(
       "git",
       ["config", "--get", "remote.origin.url"],
