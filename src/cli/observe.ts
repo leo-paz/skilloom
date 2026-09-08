@@ -29,16 +29,30 @@ function publishedObservation(
 ): Record<string, unknown> {
   const publicSource = (source: string | null): string | null =>
     source && isLocalSkillSource(source) ? null : source;
-  const publicSkill = <T extends { source: string | null }>(skill: T): T => ({
-    ...skill,
-    source: publicSource(skill.source),
-  });
+  const publicSkill = <
+    T extends {
+      source: string | null;
+      desiredSource?: string | null | undefined;
+      path?: string | undefined;
+    },
+  >(
+    skill: T,
+  ) => {
+    const { path: _path, ...safe } = skill;
+    return {
+      ...safe,
+      source: publicSource(skill.source),
+      ...(skill.desiredSource !== undefined
+        ? { desiredSource: publicSource(skill.desiredSource) }
+        : {}),
+    };
+  };
   const publicOperation = (
     operation: MachineInventory["operations"][number],
-  ) => ({
-    ...operation,
-    skill: publicSkill(operation.skill),
-  });
+  ) => {
+    const { checkoutPath: _checkoutPath, ...safe } = operation;
+    return { ...safe, skill: publicSkill(operation.skill) };
+  };
   return {
     version: inventory.version,
     observedAt: inventory.observedAt,
@@ -66,13 +80,15 @@ export async function observeMachine(
   args: string[],
   runtime: CliRuntime,
   json: boolean,
+  currentInventory?: MachineInventory,
 ): Promise<number> {
   const configIndex = args.indexOf("--config");
   const explicitConfig = configIndex === -1 ? undefined : args[configIndex + 1];
   if (configIndex !== -1 && !explicitConfig)
     throw new Error("--config requires a value");
   const paths = resolveConfigPaths(runtime.env, explicitConfig);
-  const current = await loadCurrentInventory(runtime, explicitConfig);
+  const current =
+    currentInventory ?? (await loadCurrentInventory(runtime, explicitConfig));
   const previous = await loadInventorySnapshot(paths.inventoryPath);
   const changed = !previous || comparable(previous) !== comparable(current);
   if (changed) await saveInventorySnapshot(paths.inventoryPath, current);

@@ -1,12 +1,18 @@
 import { dirname } from "node:path";
 import { GitAdapter } from "../adapters/git.js";
 import {
+  findProjectRoot,
+  loadInventorySnapshot,
+  loadMachineId,
   loadUserConfig,
   resolveConfigPaths,
   saveUserConfig,
 } from "../core/config.js";
+import { normalizeRemote } from "../core/inventory.js";
 import { isValidSkillSource } from "../core/schema.js";
 import type { SkillRequirement, UserConfig } from "../core/types.js";
+import { editProject } from "./configuration.js";
+import { loadCurrentInventory } from "./inventory.js";
 import type { CliRuntime } from "./runtime.js";
 
 type PolicyCommand = "add" | "edit" | "move" | "remove";
@@ -112,13 +118,95 @@ export async function editPolicy(
   if (command !== "add" && skillNames.length !== 1) {
     throw new Error(`${command} accepts exactly one skill name`);
   }
+  if (args.includes("--shared")) {
+    if (
+      command !== "add" ||
+      !args.includes("--project") ||
+      option(args, "--to")
+    ) {
+      throw new Error("--shared requires add --project without --to");
+    }
+    if (skillNames.length !== 1)
+      throw new Error("shared project add accepts one skill at a time");
+    const requestedAgents = agents(args);
+    const source = option(args, "--source");
+    if (!source) throw new Error("add requires --source");
+    return editProject(
+      "add",
+      [
+        "--skill",
+        skillName,
+        "--source",
+        source,
+        "--agents",
+        requestedAgents?.join(",") ?? "codex",
+      ],
+      runtime,
+      json,
+    );
+  }
   const paths = resolveConfigPaths(runtime.env, option(args, "--config"));
   let config = await pullManaged(
     await loadUserConfig(paths.configPath),
     paths.configPath,
   );
-  const sourceTarget = option(args, command === "edit" ? "--in" : "--from");
-  const destinationTarget = option(args, "--to");
+  let sourceTarget = option(args, command === "edit" ? "--in" : "--from");
+  let destinationTarget = option(args, "--to");
+  const resolveTarget = async (
+    value: string | undefined,
+  ): Promise<string | undefined> => {
+    if (!value?.startsWith("project:")) return value;
+    const name = value.slice("project:".length);
+    if (name.includes("/") || name.startsWith("local:")) return value;
+    const snapshot =
+      (await loadInventorySnapshot(paths.inventoryPath)) ??
+      (await loadCurrentInventory(runtime, option(args, "--config")));
+    const ids = new Set([
+      ...Object.keys(config.projects),
+      ...snapshot.projects.map((project) => project.id),
+    ]);
+    const matches = [...ids].filter(
+      (id) =>
+        id === name ||
+        id
+          .replace(/\.git$/i, "")
+          .split("/")
+          .at(-1) === name ||
+        (id.startsWith("local:") && id.split(":")[1] === name),
+    );
+    if (matches.length !== 1)
+      throw new Error(
+        matches.length > 1
+          ? `project name ${name} is ambiguous; use its full project ID`
+          : `project ${name} was not discovered; run setup or use its full project ID`,
+      );
+    return `project:${matches[0]}`;
+  };
+  sourceTarget = await resolveTarget(sourceTarget);
+  destinationTarget = await resolveTarget(destinationTarget);
+  if (args.includes("--project")) {
+    if (command !== "add" || destinationTarget)
+      throw new Error("--project requires add without --to");
+    const root = findProjectRoot(runtime.cwd);
+    if (!root) throw new Error("--project must run inside a Git repository");
+    const remote = await runtime.run(
+      "git",
+      ["config", "--get", "remote.origin.url"],
+      { cwd: root, env: runtime.env },
+    );
+    if (remote.code !== 0 || !remote.stdout.trim())
+      throw new Error(
+        "--project requires an origin remote to identify this repository across machines",
+      );
+    destinationTarget = `project:${normalizeRemote(remote.stdout.trim())}`;
+  }
+  if (command === "add" && !destinationTarget) {
+    const id = await loadMachineId(paths.machineIdPath);
+    const profile = config.machines[id]?.profile;
+    if (!profile)
+      throw new Error("current machine has no profile; run skilloom setup");
+    destinationTarget = `profile:${profile}`;
+  }
   let from: PolicyTarget | undefined;
   let to: PolicyTarget | undefined;
   let requirement: SkillRequirement | undefined;

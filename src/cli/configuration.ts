@@ -199,11 +199,14 @@ export async function editProject(
     if (manifest.skills.some((skill) => skill.name === name)) {
       throw new Error(`project skill ${name} already exists`);
     }
-    const agent = requireIdentifier(
-      option(args, "--agent") || "codex",
-      "agent",
-    );
-    manifest.skills.push({ source, name, agents: [agent] });
+    const agents = [
+      ...new Set(
+        (option(args, "--agents") || option(args, "--agent") || "codex")
+          .split(",")
+          .map((agent) => requireIdentifier(agent.trim(), "agent")),
+      ),
+    ].sort();
+    manifest.skills.push({ source, name, agents });
   } else {
     const next = manifest.skills.filter((skill) => skill.name !== name);
     if (next.length === manifest.skills.length) {
