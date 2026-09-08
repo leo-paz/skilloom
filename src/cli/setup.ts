@@ -278,6 +278,12 @@ export async function setupMachine(
   for (const project of inventory.projects) {
     const policy = config.projects[project.id] ?? { skills: [] };
     for (const skill of project.skills.filter((skill) => skill.installed)) {
+      // Requirements already supplied by the project stay with its Git history.
+      if (
+        skill.reasons.includes("project manifest") ||
+        skill.reasons.some((reason) => reason.startsWith("project profile "))
+      )
+        continue;
       const instances = project.checkouts.map((checkout) =>
         checkout.skills?.find(
           (candidate) => candidate.name === skill.name && candidate.installed,

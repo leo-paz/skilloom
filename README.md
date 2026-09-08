@@ -60,13 +60,15 @@ skilloom add code-review --source mattpocock/skills --project
 skilloom sync
 ```
 
-The repository's remote identifies the project, so local paths may differ. Machines without that repository skip it. Explicit project policy targets every discovered independent clone; each operation names its exact path. `--project` requires a remote and rejects linked worktrees.
+The repository's remote identifies the project, so local paths may differ. Machines without that repository skip it. Explicit project policy targets every discovered independent clone; each operation names its exact path. Personal `--project` requires a remote and rejects linked worktrees. Selecting an independent repository also registers its path locally for future syncs.
 
 Add `--shared` to write `.skilloom.yaml` for collaborators, then commit the file through your normal Git workflow:
 
 ```sh
 skilloom add code-review --source mattpocock/skills --project --shared
 ```
+
+Shared additions accept one skill per invocation and allow normal Git file editing inside a worktree without enrolling that worktree. Setup does not copy manifest requirements into personal policy.
 
 Shared project policy can also be written directly:
 

@@ -107,6 +107,21 @@ describe("CLI", () => {
     expect(config.projects).toEqual({});
     expect(await runCli(["plan", "--all", "--json"], test.value)).toBe(0);
     expect(JSON.parse(test.out.at(-1) ?? "{}").operations).toEqual([]);
+    await writeFile(
+      join(first, ".skilloom.yaml"),
+      "version: 1\nskills:\n  - { name: review, source: acme/skills, agents: [codex] }\n",
+    );
+    const originalRun = test.value.run;
+    test.value.run = (executable, args, options) =>
+      originalRun(executable, args, {
+        ...options,
+        cwd: options.cwd === second ? first : options.cwd,
+      });
+    expect(await runCli(["setup", first, "--json"], test.value)).toBe(0);
+    expect(
+      (await loadUserConfig(join(home, ".config", "skilloom", "config.yaml")))
+        .projects,
+    ).toEqual({});
   });
   it("reports the version published in package metadata", async () => {
     const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
