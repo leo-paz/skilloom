@@ -9,6 +9,7 @@ const upstreamSkill = z
     agents: z.array(z.string()),
     source: z.string().nullable().optional(),
     sourceUrl: z.string().nullable().optional(),
+    path: z.string().optional(),
   })
   .passthrough();
 
@@ -32,6 +33,7 @@ export function parseSkillsList(text: string): InstalledSkill[] {
     throw new Error(`invalid skills list output: ${parsed.error.message}`);
   return parsed.data.map((skill) => ({
     name: skill.name,
+    ...(skill.path ? { path: skill.path } : {}),
     source: skill.source ?? skill.sourceUrl ?? null,
     scope: skill.scope,
     agents: skill.agents.map(

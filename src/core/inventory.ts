@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir, realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import {
+  inspectProjectSkills,
+  isLinkedWorktree,
+  protectRepositorySkills,
+} from "../adapters/project.js";
 import { loadProjectConfig } from "./config.js";
 import { managedStateKey, planChanges } from "./plan.js";
 import { resolveDesiredState } from "./resolve.js";
@@ -59,7 +64,7 @@ interface RootResult {
   checkouts: string[];
 }
 
-function normalizeRemote(remote: string): string {
+export function normalizeRemote(remote: string): string {
   const trimmed = remote
     .trim()
     .replace(/\.git$/i, "")
@@ -95,7 +100,7 @@ async function scanDirectory(
   output: string[],
 ): Promise<void> {
   if (existsSync(join(path, ".git"))) {
-    output.push(path);
+    if (!(await isLinkedWorktree(path))) output.push(await realpath(path));
     return;
   }
   if (depth >= maximumDepth) return;
@@ -150,6 +155,8 @@ function inventorySkills(
       scope: skill.scope,
       installed: false,
       desired: true,
+      desiredSource: skill.source,
+      desiredAgents: [...skill.agents],
       managed: false,
       reasons: [...skill.reasons],
     });
@@ -157,14 +164,25 @@ function inventorySkills(
   for (const skill of installed) {
     const key = `${skill.scope}:${skill.name}`;
     const existing = entries.get(key);
-    const isManaged = managed.has(managedStateKey(skill, projectRoot));
+    const isManaged =
+      !skill.repositoryOwned &&
+      managed.has(managedStateKey(skill, projectRoot));
     if (existing) {
       existing.installed = true;
       existing.managed = isManaged;
-      existing.source = skill.source ?? existing.source;
-      existing.agents = [
-        ...new Set([...existing.agents, ...skill.agents]),
-      ].sort();
+      existing.source = skill.source;
+      existing.agents = [...skill.agents].sort();
+      existing.ownership = skill.repositoryOwned ? "repository" : "personal";
+      if (
+        skill.repositoryOwned &&
+        (skill.source !== existing.desiredSource ||
+          existing.desiredAgents?.some(
+            (agent) => !skill.agents.includes(agent),
+          ))
+      ) {
+        existing.conflict =
+          "Repository-owned skill differs from the requirement; update it through project Git.";
+      }
     } else {
       entries.set(key, {
         ...skill,
@@ -172,6 +190,7 @@ function inventorySkills(
         installed: true,
         desired: false,
         managed: isManaged,
+        ownership: skill.repositoryOwned ? "repository" : "personal",
         reasons: [],
       });
     }
@@ -184,7 +203,7 @@ function inventorySkills(
 }
 
 function operationKey(operation: PlanOperation): string {
-  return `${operation.kind}:${operation.skill.scope}:${operation.skill.name}:${operation.skill.source ?? ""}`;
+  return `${operation.checkoutPath ?? ""}:${operation.kind}:${operation.skill.scope}:${operation.skill.name}:${operation.skill.source ?? ""}`;
 }
 
 export async function buildInventory(
@@ -245,10 +264,9 @@ export async function buildInventory(
     for (const checkout of checkouts.sort((left, right) =>
       left.path.localeCompare(right.path),
     )) {
-      const installed = await dependencies.listSkills(
-        "project",
+      const installed = await inspectProjectSkills(
         checkout.path,
-        request.env,
+        await dependencies.listSkills("project", checkout.path, request.env),
       );
       const manifest = await loadProjectConfig(
         join(checkout.path, ".skilloom.yaml"),
@@ -282,12 +300,10 @@ export async function buildInventory(
           ].sort();
         }
       }
-      const checkoutOperations = planChanges(
-        desired,
+      const checkoutOperations = protectRepositorySkills(
+        planChanges(desired, installed, request.managed, checkout.path),
         installed,
-        request.managed,
-        checkout.path,
-      );
+      ).map((operation) => ({ ...operation, checkoutPath: checkout.path }));
       for (const operation of checkoutOperations) {
         operations.set(operationKey(operation), operation);
       }

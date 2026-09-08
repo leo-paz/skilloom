@@ -1,8 +1,10 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildInventory } from "../src/core/inventory.js";
+import { managedStateKey } from "../src/core/plan.js";
 import type { InstalledSkill, UserConfig } from "../src/core/types.js";
 
 const emptyConfig = (machineId: string): UserConfig => ({
@@ -15,6 +17,98 @@ const emptyConfig = (machineId: string): UserConfig => ({
 });
 
 describe("machine inventory", () => {
+  it("excludes linked worktrees and protects tracked skills despite stale management", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skilloom-git-inventory-"));
+    const repo = join(root, "repo");
+    const worktree = join(root, "review");
+    await mkdir(join(repo, ".agents/skills/review"), { recursive: true });
+    await writeFile(join(repo, ".agents/skills/review/SKILL.md"), "review");
+    const external = join(root, "external-skill");
+    await mkdir(external);
+    await writeFile(join(external, "SKILL.md"), "external");
+    await symlink(external, join(repo, ".agents/skills/linked"));
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args]);
+    git("init");
+    git("add", ".");
+    git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "initial",
+    );
+    git("worktree", "add", "-b", "review", worktree);
+    const duplicate = join(root, "duplicate");
+    execFileSync("git", ["clone", repo, duplicate]);
+    const config = emptyConfig("a");
+    config.projects["github.com/test/repo"] = {
+      skills: [{ name: "review", source: "other/source", agents: ["codex"] }],
+    };
+    const inventory = await buildInventory(
+      {
+        machine: {
+          id: "a",
+          name: "Test",
+          workspaces: [{ path: root, depth: 2 }],
+        },
+        config,
+        managed: new Set([
+          managedStateKey(
+            { scope: "project", name: "linked", source: "original/source" },
+            await realpath(repo),
+          ),
+          managedStateKey(
+            { scope: "project", name: "review", source: "original/source" },
+            await realpath(repo),
+          ),
+        ]),
+        cwd: root,
+        env: {},
+      },
+      {
+        listSkills: async (scope) =>
+          scope === "global"
+            ? []
+            : [
+                {
+                  name: "review",
+                  source: "original/source",
+                  agents: ["codex"],
+                  scope,
+                },
+                {
+                  name: "linked",
+                  source: "original/source",
+                  agents: ["codex"],
+                  scope,
+                  path: external,
+                },
+              ],
+        projectRemote: async () => "https://github.com/test/repo.git",
+      },
+    );
+    expect(inventory.discovery.checkoutsFound).toBe(2);
+    expect(inventory.operations).toEqual([]);
+    expect(inventory.projects[0]?.checkouts[0]?.skills).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ownership: "repository",
+          managed: false,
+          source: "original/source",
+          desiredSource: "other/source",
+          conflict: expect.any(String),
+        }),
+        expect.objectContaining({
+          name: "linked",
+          ownership: "repository",
+          managed: false,
+        }),
+      ]),
+    );
+  });
   it("discovers nested Git projects and groups checkouts by canonical remote", async () => {
     const root = await mkdtemp(join(tmpdir(), "skilloom-inventory-"));
     const first = join(root, "personal", "skilloom");
@@ -61,7 +155,10 @@ describe("machine inventory", () => {
     expect(inventory.projects[0]).toMatchObject({
       id: "github.com/leo-paz/skilloom",
       name: "skilloom",
-      checkouts: [{ path: first }, { path: second }],
+      checkouts: [
+        { path: await realpath(first) },
+        { path: await realpath(second) },
+      ],
     });
     expect(inventory.projects[0]?.skills).toEqual([
       expect.objectContaining({
