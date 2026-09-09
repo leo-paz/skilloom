@@ -224,9 +224,9 @@ def fixture(home):
     fake = home / "bin/npx"
     fake.write_text('#!/bin/sh\nprintf "Unexpected upstream command\\n" >> "$HOME/upstream-called"\nexit 91\n')
     fake.chmod(0o755)
-    (app / "machine-id").write_text("pty-local\n")
-    (app / "config.yaml").write_text("version: 1\nstorage: {mode: local}\nprofiles: {personal: {skills: []}}\nmachines: {pty-local: {profile: personal, name: PTY Mac}}\n")
-    (app / "machine.json").write_text(json.dumps(dict(version=1, id="pty-local", name="PTY Mac", workspaces=[])))
+    (app / "machine-id").write_text("11111111-1111-4111-8111-111111111111\n")
+    (app / "config.yaml").write_text("version: 1\nstorage: {mode: local}\nprofiles: {personal: {skills: []}}\nmachines: {11111111-1111-4111-8111-111111111111: {profile: personal, name: PTY Mac}}\n")
+    (app / "machine.json").write_text(json.dumps(dict(version=1, id="11111111-1111-4111-8111-111111111111", name="PTY Mac", workspaces=[])))
     def skill(name, **extra):
         value = dict(name=name, source="acme/skills", agents=["codex"], scope="global", installed=True,
                      desired=False, managed=False, ownership="personal", reasons=[])
@@ -238,14 +238,19 @@ def fixture(home):
     project = dict(id="github.com/acme/project", name="project", remote="https://github.com/acme/project",
                    checkouts=[dict(path=str(home / "project"), skills=[tracked], operations=[])], skills=[tracked], operations=[])
     inventory = dict(version=1, observedAt="2026-01-01T00:00:00Z",
-                     machine=dict(id="pty-local", name="PTY Mac", profile="personal"),
+                     machine=dict(id="11111111-1111-4111-8111-111111111111", name="PTY Mac", profile="personal"),
                      discovery=dict(status="found", roots=[], projectsFound=1, checkoutsFound=1),
-                     profiles=["personal"], machines=[dict(id="pty-local", name="PTY Mac", profile="personal", local=True)],
-                     globalSkills=skills, projects=[project], operations=[])
+                     profiles=["personal"], machines=[dict(id="11111111-1111-4111-8111-111111111111", name="PTY Mac", profile="personal", local=True),
+                         dict(id="pty-remote", name="PTY Studio", profile="personal", local=False, observedAt="2026-01-01T00:00:00Z", projects=0, globalSkills=1, changes=0)],
+                     globalSkills=skills, projects=[project],
+                     remoteObservations=[dict(machine=dict(id="pty-remote", name="PTY Studio"), observedAt="2026-01-01T00:00:00Z", stale=True,
+                         globalSkills=[skill("remote-only")], projects=[])],
+                     operations=[dict(kind="add", skill=dict(name="pending-fixture", source="acme/skills", scope="global", agents=["codex"]), reasons=["machine profile personal"])])
     (app / "inventory.json").write_text(json.dumps(inventory))
 
 
 def exercise(executable, home, width, height):
+    preserved = {name: (home / ".config/skilloom" / name).read_bytes() for name in ("config.yaml", "inventory.json")}
     terminal = Terminal(executable, home, width, height)
     try:
         terminal.wait("initial populated library", lambda text: "alpha-review" in text and "bravo-writing" in text)
@@ -291,10 +296,47 @@ def exercise(executable, home, width, height):
         terminal.send(b"x", "clear scope filter", lambda text: "alpha-review" in text)
         terminal.send(b"o", "managed ownership filter", lambda text: "alpha-review" in text and "bravo-writing" not in text)
         terminal.send(b"x", "clear ownership filter", lambda text: "bravo-writing" in text)
-        terminal.send(b"\t", "Machines view", lambda text: "This machine" in text and "personal" in text)
-        terminal.send(b"\t", "Changes view", lambda text: "Changes on PTY Mac" in text)
-        terminal.send(b"\t", "Settings view", lambda text: "Settings for PTY Mac" in text)
-        terminal.send(b"1", "Library view shortcut", lambda text: "alpha-review" in text)
+        terminal.send(b"\t", "Machines selected list", lambda text: "This machine" in text and re.search(r"›\s+PTY Mac", text) is not None)
+        assert "Search:" not in terminal.screen.text(), "Machines retained the Library search header"
+        assert "All machines ·" not in terminal.screen.text(), "Machines retained Library filters"
+        for key in (b"a", b"d", b"v"):
+            terminal.send(key, "Library action ignored in Machines", lambda text: "This machine" in text and "Add a requirement" not in text and "Verify source for" not in text)
+        terminal.send(b"\x1b[Z", "Shift-Tab returns to Library", lambda text: "Results" in text and "alpha-review" in text)
+        terminal.send(b"\t", "return to Machines", lambda text: "This machine" in text)
+        terminal.send(b"\x1b[B", "select remote machine", lambda text: re.search(r"›\s+PTY Studio", text) is not None)
+        terminal.send(b"\r", "open selected machine Library", lambda text: "Results" in text and "remote-only" in text and "alpha-review" not in text)
+        terminal.send(b"\r", "inspect selected remote skill", lambda text: "Skill details" in text and "remote-only" in text)
+        terminal.send(b"\x1b", "details return to scoped results first", lambda text: "Results" in text and "remote-only" in text and "Skill details" not in text)
+        terminal.send(b"\x1b", "scoped results return to selected machine", lambda text: "This machine" in text and re.search(r"›\s+PTY Studio", text) is not None)
+        terminal.send(b"\x1b", "secondary Escape returns to Library", lambda text: "Results" in text)
+        terminal.send(b"x", "reset machine filter explicitly", lambda text: "alpha-review" in text)
+        terminal.send(b"3", "Changes selected review action", lambda text: "Changes on PTY Mac" in text and re.search(r"›\s+Review sync", text) is not None)
+        assert "Search:" not in terminal.screen.text(), "Changes retained the Library search header"
+        for key in (b"a", b"d", b"v"):
+            terminal.send(key, "Library action ignored in Changes", lambda text: "Changes on PTY Mac" in text and "Add a requirement" not in text and "Verify source for" not in text)
+        # Fresh review deliberately scans only this disposable home; it never applies.
+        terminal.send(b"\r", "Changes Enter opens fresh read-only preview", lambda text: "Review local sync" in text and "No installation changes" in text)
+        assert "pending-fixture" not in terminal.screen.text(), "Review reused the stale saved operation"
+        terminal.send(b"\x1b", "cancel fresh preview", lambda text: "Changes on PTY Mac" in text and re.search(r"›\s+Review sync", text) is not None)
+        terminal.send(b"\x1b[B", "select saved operation", lambda text: re.search(r"›\s+Add pending-fixture", text) is not None)
+        terminal.send(b"\r", "inspect operation without applying", lambda text: "Change details" in text and "pending-fixture" in text)
+        terminal.send(b"\x1b", "operation details return to selected change", lambda text: "Changes on PTY Mac" in text and re.search(r"›\s+Add pending-fixture", text) is not None)
+        terminal.send(b"\t", "Settings selected actions", lambda text: "Settings for PTY Mac" in text and re.search(r"›\s+Workspace setup", text) is not None)
+        assert "Search:" not in terminal.screen.text(), "Settings retained the Library search header"
+        for key in (b"a", b"d", b"v"):
+            terminal.send(key, "Library action ignored in Settings", lambda text: "Settings for PTY Mac" in text and "Add a requirement" not in text and "Verify source for" not in text)
+        settings = [("Workspace setup", "Set up this machine"), ("Create a profile", "Create a global profile"),
+                    ("Choose global profile", "Choose this machine's profile"), ("Connect shared configuration", "Connect shared configuration")]
+        for i, (row, title) in enumerate(settings):
+            if i: terminal.send(b"\x1b[B", "select Settings action", lambda text, row=row: re.search(r"›\s+" + re.escape(row), text) is not None)
+            terminal.send(b"\r", "open selected Settings form", lambda text, title=title: title in text and "Settings for PTY Mac" not in text)
+            terminal.send(b"\x1b", "cancel form and preserve Settings selection", lambda text, row=row: "Settings for PTY Mac" in text and re.search(r"›\s+" + re.escape(row), text) is not None)
+        terminal.send(b"\x1b[B", "select legacy review action", lambda text: re.search(r"›\s+Review legacy adoption", text) is not None)
+        terminal.send(b"\r", "open read-only migration review", lambda text: "Review migration" in text)
+        terminal.send(b"\x1b", "cancel migration review", lambda text: "Settings for PTY Mac" in text and re.search(r"›\s+Review legacy adoption", text) is not None)
+        terminal.send(b"\x1b[Z", "reverse Tab to Changes", lambda text: "Changes on PTY Mac" in text)
+        terminal.send(b"\x1b[Z", "reverse Tab to Machines", lambda text: "This machine" in text and "PTY Studio" in text)
+        terminal.send(b"\x1b[Z", "reverse Tab to Library", lambda text: "Results" in text and "alpha-review" in text)
         terminal.send(b"?", "keyboard guide", lambda text: "Keyboard guide" in text)
         terminal.send(b"\x1b", "close guide", lambda text: "alpha-review" in text)
         target_width, target_height = ((80, 28) if width == 120 else (120, 36))
@@ -309,8 +351,11 @@ def exercise(executable, home, width, height):
         interrupt.finish(b"\x03")
     finally:
         interrupt.close()
-    assert not (home / "upstream-called").exists(), "Cached browsing unexpectedly invoked upstream"
-    print(f"PTY {Path(executable).name} {width}x{height}: library, search focus/Esc/arrows, full-page details/back, explicit metadata, views, resize, q/Ctrl-C restoration passed")
+    assert not (home / "upstream-called").exists(), "Read-only preview unexpectedly invoked unpinned npx"
+    for name, content in preserved.items():
+        assert (home / ".config/skilloom" / name).read_bytes() == content, f"Navigation/preview mutated {name}"
+    assert not (home / ".config/skilloom/state.json").exists(), "Navigation/preview applied installation changes"
+    print(f"PTY {Path(executable).name} {width}x{height}: library, search focus/Esc/arrows, full-page details/back, explicit metadata, selected secondary views/forms/preview cancellation, reverse Tab, resize, q/Ctrl-C restoration passed")
 
 
 def main():

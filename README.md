@@ -35,7 +35,7 @@ The Library combines global and project skills across local checkouts and publis
 
 | Key | Action |
 | --- | --- |
-| `1`–`4` or `Tab` | Switch between Library, Machines, Changes, and Settings |
+| `1`–`4`, `Tab`, or `Shift-Tab` | Switch views directly, forward, or backward |
 | `/` | Search the library |
 | `↑` / `↓` or `j` / `k` | Select a skill |
 | `←` / `→` | Cycle machines in Results; move the cursor while editing search |
@@ -50,9 +50,9 @@ The Library combines global and project skills across local checkouts and publis
 | `v` | Verify an unknown source for a local installation |
 | `?`, `q` | Show help or quit |
 
-Settings provides workspace setup, profile creation or copying, this machine's profile assignment, connection to shared Git storage, and migration review. The Changes view shows the saved plan; `s` refreshes it before review. Sync and migration reviews require `y` to apply and accept `n` or Escape to cancel. Saving a requirement or changing a profile does not install skills; review sync when ready.
+Settings provides workspace setup, profile creation or copying, this machine's profile assignment, connection to shared Git storage, and migration review. Use ↑/↓ and Enter to open a Settings action; Escape cancels and keeps your selection. The Changes view lists the saved plan: Enter on a change opens its details, while Enter on **Review sync** (or `s`) checks current installations before review. Sync and migration reviews require `y` to apply and accept `n` or Escape to cancel. Saving a requirement or changing a profile does not install skills; review sync when ready.
 
-Machines shows available observations, including missing or stale data. Refreshing here scans the current computer. Run `observe --publish` or `sync` on another machine to update its published state.
+Machines shows available observations, including missing or stale data. Use ↑/↓ to select a machine and Enter to browse its skills. Escape returns from skill details to results, then back to the selected machine. Escape from a secondary view returns to Library. Refreshing here scans the current computer. Run `observe --publish` or `sync` on another machine to update its published state.
 
 Use `npx skilloom@canary` instead if you prefer Node. Stable releases use `@latest`.
 

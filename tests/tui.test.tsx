@@ -462,4 +462,107 @@ describe("full-screen skill library", () => {
     await tick();
     expect(app.lastFrame()).toContain("Search: codereview");
   });
+  it("selects a machine, browses its skills, and returns through details to the same machine", async () => {
+    const app = mount(80);
+    await tick();
+    app.stdin.write("2");
+    await tick();
+    expect(app.lastFrame()).not.toContain("Search:");
+    app.stdin.write("\u001b[B");
+    await tick();
+    expect(app.lastFrame()).toContain("› Studio");
+    app.stdin.write("\r");
+    await tick();
+    expect(app.lastFrame()).toContain("‹ Studio ›");
+    expect(app.lastFrame()).toContain("remote-research");
+    app.stdin.write("\r");
+    await tick();
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("Results");
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("› Studio");
+    expect(app.lastFrame()).not.toContain("Results");
+  });
+  it("opens settings with arrows and Enter, cancels back to selection, and reverses tabs", async () => {
+    const api = backend();
+    const app = mount(40, api);
+    await tick();
+    app.stdin.write("4");
+    await tick();
+    expect(app.lastFrame()).toContain("› Workspace setup");
+    app.stdin.write("\u001b[B");
+    await tick();
+    expect(app.lastFrame()).toContain("› Create a profile");
+    app.stdin.write("\r");
+    await tick();
+    expect(app.lastFrame()).toContain("New profile");
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("› Create a profile");
+    expect(api.execute).not.toHaveBeenCalled();
+    app.stdin.write("\u001b[Z");
+    await tick();
+    expect(app.lastFrame()).toContain("Review sync");
+    app.stdin.write("\u001b[Z");
+    await tick();
+    expect(app.lastFrame()).toContain("› Workstation");
+  });
+  it("opens saved change details without applying, and Enter on Review sync obtains a fresh preview", async () => {
+    const inventory = inventoryFixture();
+    inventory.operations = [
+      {
+        kind: "add",
+        skill: {
+          name: "new-skill",
+          source: "acme/new",
+          scope: "global",
+          agents: ["codex"],
+        },
+        reasons: ["profile"],
+      },
+    ];
+    const api = backend();
+    const app = render(
+      <SkilloomApp
+        initialInventory={inventory}
+        backend={api}
+        width={100}
+        height={32}
+      />,
+    );
+    mounted.push(app);
+    await tick();
+    app.stdin.write("3");
+    await tick();
+    expect(app.lastFrame()).toContain("› Review sync");
+    app.stdin.write("\u001b[B");
+    await tick();
+    app.stdin.write("\r");
+    await tick();
+    expect(app.lastFrame()).toContain("Change details");
+    expect(app.lastFrame()).toContain("acme/new");
+    expect(api.execute).not.toHaveBeenCalled();
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("› Add new-skill");
+    app.stdin.write("\u001b[A");
+    await tick();
+    app.stdin.write("\r");
+    await tick();
+    expect(api.execute).toHaveBeenCalledWith(
+      ["sync", "--dry-run"],
+      expect.any(Function),
+    );
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("› Review sync");
+    app.stdin.write("a");
+    app.stdin.write("d");
+    app.stdin.write("v");
+    await tick();
+    expect(api.execute).toHaveBeenCalledTimes(1);
+    expect(app.lastFrame()).toContain("› Review sync");
+  });
 });

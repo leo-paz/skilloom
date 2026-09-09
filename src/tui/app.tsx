@@ -11,6 +11,8 @@ import {
   safeText,
 } from "./catalog.js";
 
+import { SelectionMenu } from "./selection-menu.js";
+
 export interface CommandResult {
   code: number;
   value: Record<string, unknown>;
@@ -61,9 +63,40 @@ const color = {
 };
 const scopes = ["all", "global", "project"];
 const ownerships = ["all", "managed", "git-owned", "unmanaged", "unknown"];
-function cycle(values: string[], value: string): string {
-  return values[(values.indexOf(value) + 1) % values.length]!;
+function cycle(values: string[], value: string, direction = 1): string {
+  return values[
+    (values.indexOf(value) + direction + values.length) % values.length
+  ]!;
 }
+const settingsActions = [
+  {
+    key: "u",
+    label: "Workspace setup",
+    description: "Add a folder of projects and keep this machine's profile.",
+  },
+  {
+    key: "p",
+    label: "Create a profile",
+    description: "Start an empty global skill set or copy an existing profile.",
+  },
+  {
+    key: "b",
+    label: "Choose global profile",
+    description: "Choose the global requirements used by this machine.",
+  },
+  {
+    key: "c",
+    label: "Connect shared configuration",
+    description:
+      "Connect a Git repository to share configuration and observations.",
+  },
+  {
+    key: "m",
+    label: "Review legacy adoption",
+    description:
+      "Preview old ownership claims before migrating. Installed files are preserved.",
+  },
+];
 function strings(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map((x) => (typeof x === "string" ? x : JSON.stringify(x)))
@@ -331,7 +364,17 @@ export function SkilloomApp({
   const [details, setDetails] = useState(false);
   const [technical, setTechnical] = useState(false);
   const [detailOffset, setDetailOffset] = useState(0);
-  const [viewOffset, setViewOffset] = useState(0);
+  const [machineIndex, setMachineIndex] = useState(
+    Math.max(
+      0,
+      initialInventory?.machines.findIndex(
+        (machine) => machine.id === initialInventory.machine.id,
+      ) ?? 0,
+    ),
+  );
+  const [settingsIndex, setSettingsIndex] = useState(0);
+  const [changeIndex, setChangeIndex] = useState(0);
+  const [libraryOrigin, setLibraryOrigin] = useState<"Machines">();
   const [outcome, setOutcome] = useState<string[]>();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
@@ -428,14 +471,25 @@ export function SkilloomApp({
   };
   const narrow = size.width < 100;
   const tiny = size.width < 65;
-  const bodyHeight = Math.max(5, size.height - 8);
+  const bodyHeight = Math.max(5, size.height - (view === "Library" ? 8 : 6));
   const pageSize = Math.max(1, bodyHeight - 4);
   useEffect(() => {
     setDetailOffset(0);
   }, [selected?.name]);
   useEffect(() => {
-    setViewOffset(0);
-  }, [view]);
+    setMachineIndex((index) =>
+      Math.min(index, Math.max(0, (inventory?.machines.length ?? 0) - 1)),
+    );
+    setChangeIndex((index) =>
+      Math.min(index, inventory?.operations.length ?? 0),
+    );
+  }, [inventory]);
+  const goToView = (next: string) => {
+    setView(next);
+    setDetails(false);
+    setLibraryOrigin(undefined);
+    setNotice("");
+  };
   const execute = async (args: string[], refresh = true) => {
     setBusy(true);
     setError("");
@@ -887,6 +941,11 @@ export function SkilloomApp({
     }
     if (key.escape) {
       if (details) setDetails(false);
+      else if (view !== "Library") goToView("Library");
+      else if (libraryOrigin) {
+        setView(libraryOrigin);
+        setLibraryOrigin(undefined);
+      }
       return;
     }
     if (input === "q") {
@@ -898,29 +957,36 @@ export function SkilloomApp({
       return;
     }
     if (input === "/") {
-      setView("Library");
-      setDetails(false);
+      goToView("Library");
       setSearchCursor(Array.from(query).length);
       setSearching(true);
       return;
     }
     if (["1", "2", "3", "4"].includes(input)) {
-      setView(
+      goToView(
         ["Library", "Machines", "Changes", "Settings"][Number(input) - 1]!,
       );
-      setDetails(false);
       return;
     }
     if (key.tab) {
-      setView(cycle(["Library", "Machines", "Changes", "Settings"], view));
-      setDetails(false);
+      goToView(
+        cycle(
+          ["Library", "Machines", "Changes", "Settings"],
+          view,
+          key.shift ? -1 : 1,
+        ),
+      );
       return;
     }
     if (input === "r") {
       void load(true);
       return;
     }
-    if (input === "s" && inventory) {
+    if (
+      input === "s" &&
+      inventory &&
+      (view === "Library" || view === "Changes")
+    ) {
       void preview("sync");
       return;
     }
@@ -928,16 +994,98 @@ export function SkilloomApp({
       if (key.return || input === "u") setupForm();
       return;
     }
+    if (view !== "Library") {
+      const selectedIndex =
+        view === "Machines"
+          ? machineIndex
+          : view === "Changes"
+            ? changeIndex
+            : settingsIndex;
+      const setSelected =
+        view === "Machines"
+          ? setMachineIndex
+          : view === "Changes"
+            ? setChangeIndex
+            : setSettingsIndex;
+      const count =
+        view === "Machines"
+          ? inventory.machines.length
+          : view === "Changes"
+            ? inventory.operations.length + 1
+            : settingsActions.length;
+      const last = Math.max(0, count - 1);
+      const step = Math.max(1, bodyHeight - 9);
+      if (key.downArrow || input === "j" || key.pageDown) {
+        setSelected(Math.min(last, selectedIndex + (key.pageDown ? step : 1)));
+        return;
+      }
+      if (key.upArrow || input === "k" || key.pageUp) {
+        setSelected(Math.max(0, selectedIndex - (key.pageUp ? step : 1)));
+        return;
+      }
+      if (key.home) {
+        setSelected(0);
+        return;
+      }
+      if (key.end) {
+        setSelected(last);
+        return;
+      }
+      if (view === "Machines") {
+        if (key.return) {
+          const target = inventory.machines[machineIndex];
+          if (!target) return;
+          setMachine(target.id);
+          setQuery("");
+          setScope("all");
+          setOwnership("all");
+          setIndex(0);
+          setDetails(false);
+          setView("Library");
+          setLibraryOrigin("Machines");
+          setNotice("");
+        }
+        return;
+      }
+      if (view === "Changes") {
+        if (key.return) {
+          if (changeIndex === 0) void preview("sync");
+          else {
+            const operation = inventory.operations[changeIndex - 1];
+            if (!operation) return;
+            setReviewOffset(0);
+            setOutcome([
+              "Change details",
+              `${operation.kind === "add" ? "Add" : "Remove"} ${operation.skill.name}`,
+              `Scope: ${operation.skill.scope}`,
+              `Source: ${operation.skill.source ?? "Unknown"}`,
+              `Agents: ${operation.skill.agents.join(", ")}`,
+              ...(operation.checkoutPath
+                ? [`Checkout: ${operation.checkoutPath}`]
+                : []),
+              ...operation.reasons,
+              "Saved plan only. Review sync checks current state before applying.",
+            ]);
+          }
+        }
+        return;
+      }
+    }
     if (view === "Settings") {
-      if (input === "m") {
+      const action = key.return ? settingsActions[settingsIndex]!.key : input;
+      const actionIndex = settingsActions.findIndex(
+        (item) => item.key === action,
+      );
+      if (actionIndex >= 0) setSettingsIndex(actionIndex);
+      if (action === "m") {
         void preview("migrate");
         return;
       }
-      if (input === "u") {
+      if (action === "u") {
         setupForm();
         return;
       }
-      if (input === "p")
+      if (action === "p")
         showForm({
           title: "Create a global profile",
           hint: "Copy an existing profile or leave the second field empty for a new set.",
@@ -952,14 +1100,20 @@ export function SkilloomApp({
             ...(f[1]!.value ? ["--copy-profile", f[1]!.value] : []),
           ],
         });
-      if (input === "b")
+      if (action === "b")
         showForm({
           title: "Choose this machine's profile",
           hint: `Available: ${inventory.profiles.join(", ")}. Review sync before applying.`,
-          fields: [{ label: "Profile", value: inventory.machine.profile }],
+          fields: [
+            {
+              label: "Profile",
+              value: inventory.machine.profile,
+              choices: inventory.profiles,
+            },
+          ],
           submit: (f) => ["config", "--profile", f[0]!.value],
         });
-      if (input === "c")
+      if (action === "c")
         showForm({
           title: "Connect shared configuration",
           hint: "Uses your Git credentials. Existing policy is merged; conflicts require resolution.",
@@ -1015,22 +1169,15 @@ export function SkilloomApp({
       setDetailOffset(0);
       return;
     }
-    if (details || view === "Machines" || view === "Changes") {
-      const update = details ? setDetailOffset : setViewOffset;
-      const max = details
-        ? Math.max(
-            0,
-            (selected
-              ? inspectorLines(selected, size.width, technical).length
-              : 0) -
-              (bodyHeight - 1),
-          )
-        : Math.max(
-            0,
-            (view === "Machines"
-              ? inventory.machines.length
-              : inventory.operations.length) - 1,
-          );
+    if (details) {
+      const update = setDetailOffset;
+      const max = Math.max(
+        0,
+        (selected
+          ? inspectorLines(selected, size.width, technical).length
+          : 0) -
+          (bodyHeight - 1),
+      );
       if (key.downArrow || input === "j" || key.pageDown)
         update((x) => Math.min(max, x + (key.pageDown ? pageSize : 1)));
       if (key.upArrow || input === "k" || key.pageUp)
@@ -1077,9 +1224,13 @@ export function SkilloomApp({
             ? tiny
               ? "Esc results · i more · ↑↓ scroll"
               : `Esc results · ↑↓ scroll · i ${technical ? "hide technical details" : "technical details"}`
-            : tiny
-              ? "↑↓ select · Enter open · / search · ?"
-              : "↑↓ select   Enter open   / search   ? help   q quit";
+            : view !== "Library"
+              ? tiny
+                ? "↑↓ select · Enter open · Esc library"
+                : `↑↓ select   Enter ${view === "Machines" ? "browse skills" : view === "Changes" ? "open" : "choose"}   Tab/Shift-Tab views   Esc library`
+              : tiny
+                ? "↑↓ select · Enter open · / search · ?"
+                : `↑↓ select   Enter open   / search   ${libraryOrigin ? "Esc machines   " : ""}? help   q quit`;
   let content: React.ReactNode;
   if (outcome) {
     const lines = wrapLines(
@@ -1104,7 +1255,7 @@ export function SkilloomApp({
       <Box flexDirection="column" padding={1}>
         <Line bold>Keyboard guide</Line>
         {[
-          "1 Library   2 Machines   3 Changes   4 Settings",
+          "1–4 Switch view   Tab Next   Shift-Tab Previous",
           "/ Search   ←/→ Edit text   Enter/Esc Results",
           "↑↓ or j/k Select   Details: i Show technical information",
           "←/→ Change machine in Results   g Scope   o Ownership",
@@ -1198,128 +1349,83 @@ export function SkilloomApp({
         <Line tone={color.accent}>Enter Set up this machine</Line>
       </Box>
     );
-  else if (view === "Machines")
+  else if (view === "Machines") {
+    const selectedMachine = inventory.machines[machineIndex];
+    const local = selectedMachine?.id === inventory.machine.id;
     content = (
-      <Box flexDirection="column" padding={1}>
-        <Line bold>Machines</Line>
-        <Line tone={color.muted}>
-          Local inspection and last published remote observations
-        </Line>
-        <Text> </Text>
-        {inventory.machines
-          .slice(
-            Math.min(viewOffset, Math.max(0, inventory.machines.length - 1)),
-            Math.min(viewOffset, Math.max(0, inventory.machines.length - 1)) +
-              Math.max(1, Math.floor((bodyHeight - 3) / 4)),
-          )
-          .map((m) => (
-            <Box key={m.id} flexDirection="column" marginBottom={1}>
-              <Line
-                bold
-                tone={m.id === inventory.machine.id ? color.accent : undefined}
-              >
-                {safeText(m.name)}{" "}
-                {m.id === inventory.machine.id
-                  ? "This machine"
-                  : "Remote observation"}
-              </Line>
-              <Line>
-                {m.profile} ·{" "}
-                {m.id === inventory.machine.id
-                  ? inventory.discovery.projectsFound
-                  : (m.projects ?? "?")}{" "}
-                projects ·{" "}
-                {m.id === inventory.machine.id
-                  ? inventory.operations.length
-                  : (m.changes ?? "?")}{" "}
-                pending
-              </Line>
-              <Line tone={color.muted}>
-                {m.id === inventory.machine.id
-                  ? observedLabel(inventory.observedAt)
-                  : m.observedAt
-                    ? `Last observed ${observedLabel(m.observedAt)}`
-                    : "No observation published yet"}
-              </Line>
-            </Box>
-          ))}
-      </Box>
+      <SelectionMenu
+        title="Machines"
+        subtitle="Select a machine to browse its skills."
+        items={inventory.machines.map((machine) => ({
+          label: `${machine.name}   ${machine.id === inventory.machine.id ? "This machine" : "Remote"}`,
+        }))}
+        selected={machineIndex}
+        height={bodyHeight}
+        width={size.width}
+        context={
+          selectedMachine
+            ? [
+                `Profile: ${selectedMachine.profile} · ${local ? inventory.discovery.projectsFound : (selectedMachine.projects ?? "?")} projects`,
+                local
+                  ? `Observed ${observedLabel(inventory.observedAt)}`
+                  : selectedMachine.observedAt
+                    ? `Last published ${observedLabel(selectedMachine.observedAt)}`
+                    : "No observation published yet.",
+                local
+                  ? "Refresh inspects this machine."
+                  : "Remote skills are saved observations, not live state.",
+              ]
+            : []
+        }
+      />
     );
-  else if (view === "Settings")
+  } else if (view === "Settings")
     content = (
-      <Box flexDirection="column" padding={1}>
-        <Line bold>Settings for {safeText(inventory.machine.name)}</Line>
-        <Line>Global profile: {safeText(inventory.machine.profile)}</Line>
-        <Text> </Text>
-        <Line tone={color.muted}>Workspace roots</Line>
-        {inventory.discovery.roots.map((r) => (
-          <Line key={r.path}>
-            {safeText(r.path)} depth {r.depth} {r.status}
-          </Line>
-        ))}
-        <Text> </Text>
-        {[
-          "u  Set up a workspace and preserve global skills",
-          "p  Create or copy a global profile",
-          "b  Choose this machine's profile",
-          "c  Connect a shared configuration repository",
-          "m  Review old adoption requirements",
-          "",
-          "Git-owned skills stay under Git's control.",
-          "Source verification is available in the library with v.",
-          "Configuration changes are reviewed before installation.",
-        ].map((x, i) => (
-          <Line key={i}>{x}</Line>
-        ))}
-      </Box>
+      <SelectionMenu
+        title={`Settings for ${inventory.machine.name}`}
+        subtitle={`Profile: ${inventory.machine.profile} · ${inventory.discovery.roots.length} workspace ${inventory.discovery.roots.length === 1 ? "root" : "roots"}`}
+        items={settingsActions}
+        selected={settingsIndex}
+        context={[settingsActions[settingsIndex]!.description]}
+        height={bodyHeight}
+        width={size.width}
+      />
     );
-  else if (view === "Changes")
+  else if (view === "Changes") {
+    const selectedOperation = inventory.operations[changeIndex - 1];
     content = (
-      <Box flexDirection="column" padding={1}>
-        <Line bold>Changes on {safeText(inventory.machine.name)}</Line>
-        <Line tone={color.muted}>
-          Saved plan · press s to refresh and review before applying
-        </Line>
-        <Text> </Text>
-        {inventory.operations.length ? (
-          inventory.operations
-            .slice(
-              Math.min(
-                viewOffset,
-                Math.max(0, inventory.operations.length - 1),
-              ),
-              Math.min(
-                viewOffset,
-                Math.max(0, inventory.operations.length - 1),
-              ) +
-                bodyHeight -
-                5,
-            )
-            .map((op, i) => (
-              <Line
-                key={i}
-                tone={op.kind === "remove" ? color.warning : color.good}
-              >
-                {op.kind === "add" ? "+" : "−"} {safeText(op.skill.name)}{" "}
-                {op.skill.scope} {safeText(op.skill.source)}{" "}
-                {safeText(op.checkoutPath)}
-              </Line>
-            ))
-        ) : (
-          <>
-            <Line tone={color.good}>
-              No pending changes in this observation.
-            </Line>
-            <Text> </Text>
-            <Text dimColor>
-              Convergence covers declared requirements. Unmanaged and Git-owned
-              skills remain visible in the library.
-            </Text>
-          </>
-        )}
-      </Box>
+      <SelectionMenu
+        title={`Changes on ${inventory.machine.name}`}
+        subtitle={
+          inventory.operations.length
+            ? `${inventory.operations.length} saved changes. Review before applying.`
+            : "No saved installation changes."
+        }
+        items={[
+          { label: "Review sync" },
+          ...inventory.operations.map((operation) => ({
+            label: `${operation.kind === "add" ? "Add" : "Remove"} ${operation.skill.name}   ${operation.skill.scope}`,
+          })),
+        ]}
+        selected={changeIndex}
+        height={bodyHeight}
+        width={size.width}
+        context={
+          selectedOperation
+            ? [
+                `Source: ${selectedOperation.skill.source ?? "Unknown"}`,
+                selectedOperation.checkoutPath ??
+                  "Global installation on this machine.",
+                "Enter shows details. Press s to review a fresh sync.",
+              ]
+            : [
+                "Check installations and review a fresh plan.",
+                "Confirm the review to apply changes.",
+              ]
+        }
+      />
     );
-  else if (details)
+  } else if (details)
     content = (
       <Inspector
         entry={selected}
@@ -1436,43 +1542,53 @@ export function SkilloomApp({
           )}
         </Text>
       </Box>
-      <Box paddingX={1}>
-        <Text
-          wrap="truncate-end"
-          color={searching ? color.accent : color.muted}
-        >
-          {details
-            ? "Esc returns to your results"
-            : searching
-              ? "Editing search: "
-              : "Search: "}
-          {!details &&
-            (searching
-              ? `${Array.from(query)
-                  .slice(
-                    Math.max(0, searchCursor - Math.max(5, size.width - 24)),
-                    searchCursor,
-                  )
-                  .join("")}▏${Array.from(query).slice(searchCursor).join("")}`
-              : query || "press /")}
-        </Text>
-      </Box>
-      <Box paddingX={1} justifyContent="space-between">
-        <Text wrap="truncate-end">
-          {view === "Library" && !details && !searching
-            ? `‹ ${safeText(selectedMachine)} ›`
-            : safeText(selectedMachine)}
-          {scope === "all" ? "" : ` · ${scope}`}
-          {ownership === "all" ? "" : ` · ${ownership}`} · {rows.length} skills
-        </Text>
-        {!tiny && (
-          <Text dimColor>
-            {inventory
-              ? `Observed ${observedLabel(inventory.observedAt)}`
-              : "First run"}
-          </Text>
-        )}
-      </Box>
+      {view === "Library" && (
+        <>
+          <Box paddingX={1}>
+            <Text
+              wrap="truncate-end"
+              color={searching ? color.accent : color.muted}
+            >
+              {details
+                ? "Esc returns to your results"
+                : searching
+                  ? "Editing search: "
+                  : "Search: "}
+              {!details &&
+                (searching
+                  ? `${Array.from(query)
+                      .slice(
+                        Math.max(
+                          0,
+                          searchCursor - Math.max(5, size.width - 24),
+                        ),
+                        searchCursor,
+                      )
+                      .join(
+                        "",
+                      )}▏${Array.from(query).slice(searchCursor).join("")}`
+                  : query || "press /")}
+            </Text>
+          </Box>
+          <Box paddingX={1} justifyContent="space-between">
+            <Text wrap="truncate-end">
+              {!details && !searching
+                ? `‹ ${safeText(selectedMachine)} ›`
+                : safeText(selectedMachine)}
+              {scope === "all" ? "" : ` · ${scope}`}
+              {ownership === "all" ? "" : ` · ${ownership}`} · {rows.length}{" "}
+              skills
+            </Text>
+            {!tiny && (
+              <Text dimColor>
+                {inventory
+                  ? `Observed ${observedLabel(inventory.observedAt)}`
+                  : "First run"}
+              </Text>
+            )}
+          </Box>
+        </>
+      )}
       <Box height={bodyHeight} overflow="hidden" flexDirection="column">
         {content}
       </Box>
@@ -1486,9 +1602,11 @@ export function SkilloomApp({
               ? progress
               : error ||
                   notice ||
-                  (inventory?.cached
-                    ? "Saved inventory · r refreshes this machine"
-                    : "Installation changes require review."),
+                  (view !== "Library"
+                    ? " "
+                    : inventory?.cached
+                      ? "Saved inventory · r refreshes this machine"
+                      : "Installation changes require review."),
           )}
         </Text>
       </Box>
