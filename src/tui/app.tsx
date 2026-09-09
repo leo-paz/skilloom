@@ -20,6 +20,7 @@ export interface CommandResult {
   value: Record<string, unknown>;
 }
 export interface DashboardBackend {
+  enrich?: (inventory: MachineInventory) => Promise<MachineInventory>;
   cancelRead?: () => Promise<void>;
   load: (
     refresh: boolean,
@@ -154,11 +155,7 @@ function wrapLines(lines: DetailLine[], width: number): DetailLine[] {
       .map((text) => ({ ...line, text })),
   );
 }
-function inspectorLines(
-  entry: LibraryEntry,
-  width: number,
-  technical = false,
-): DetailLine[] {
+function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
   const content: DetailLine[] = [
     { text: "Skill details", tone: color.accent },
     { text: entry.name, bold: true },
@@ -172,37 +169,42 @@ function inspectorLines(
   else content.push({ text: "Sources vary by location", tone: color.warning });
   const groups = new Map<
     string,
-    { record: LibraryEntry["occurrences"][number]; count: number }
+    {
+      record: LibraryEntry["occurrences"][number];
+      count: number;
+      paths: string[];
+    }
   >();
-  for (const [index, record] of entry.occurrences.entries()) {
-    const key = technical
-      ? String(index)
-      : JSON.stringify([
-          record.machine.id,
-          record.projectId,
-          record.source,
-          record.agents,
-          record.detectedAgents,
-          record.ownership,
-          record.managed,
-          record.installed,
-          record.desired,
-          record.conflict,
-          record.metadata,
-        ]);
+  for (const record of entry.occurrences) {
+    const key = JSON.stringify([
+      record.machine.id,
+      record.projectId,
+      record.source,
+      record.agents,
+      record.detectedAgents,
+      record.ownership,
+      record.managed,
+      record.installed,
+      record.desired,
+      record.conflict,
+      record.metadata,
+    ]);
     const group = groups.get(key);
-    if (group) group.count++;
-    else groups.set(key, { record, count: 1 });
+    if (group) {
+      group.count++;
+      if (record.checkoutPath) group.paths.push(record.checkoutPath);
+    } else
+      groups.set(key, {
+        record,
+        count: 1,
+        paths: record.checkoutPath ? [record.checkoutPath] : [],
+      });
   }
   if (entry.occurrences.some((record) => record.stale))
     content.push({ text: "Saved observations included", tone: color.muted });
-  for (const { record, count } of groups.values()) {
+  for (const { record, count, paths } of groups.values()) {
     const owner = ownershipLabel(record);
-    const detected = record.detectedAgents ?? record.agents;
-    const agents = technical
-      ? record.agents.join(", ")
-      : detected.slice(0, 3).join(", ") +
-        (detected.length > 3 ? ` +${detected.length - 3} more` : "");
+    const agents = record.agents.join(", ");
     content.push(
       { text: " " },
       {
@@ -220,7 +222,7 @@ function inspectorLines(
         tone: color.muted,
       });
     content.push({
-      text: `${technical ? "Available to" : "Agents"}: ${agents || "Unknown"}`,
+      text: `Available to: ${agents || "Unknown"}`,
       tone: color.muted,
     });
     content.push({
@@ -249,7 +251,7 @@ function inspectorLines(
         text: "Usage scan is partial; more evidence may exist.",
         tone: color.muted,
       });
-    if (technical) {
+    {
       for (const variant of record.metadata?.variants ?? [])
         content.push({
           text: `${variant.agent}: ${invocationLabel(variant.invocation)} · ${variant.status}`,
@@ -260,11 +262,12 @@ function inspectorLines(
           text: `Detected here: ${record.detectedAgents.join(", ")}`,
           tone: color.muted,
         });
-      if (record.checkoutPath)
-        content.push({
-          text: `Path: ${record.checkoutPath}`,
-          tone: color.muted,
-        });
+      if (paths.length)
+        for (const path of [...new Set(paths)])
+          content.push({
+            text: `Path: ${path}`,
+            tone: color.muted,
+          });
       else if (record.checkoutId)
         content.push({
           text: `Checkout ID: ${record.checkoutId}`,
@@ -338,7 +341,7 @@ function Preview({
           </Line>
         ))}
       <Text> </Text>
-      <Line tone={color.accent}>Enter opens skill details</Line>
+      <Line tone={color.accent}>Enter or i opens full details</Line>
     </Box>
   );
 }
@@ -347,17 +350,15 @@ function Inspector({
   lines,
   width,
   offset,
-  technical,
 }: {
   entry: LibraryEntry | undefined;
   lines: number;
   width: number;
   offset: number;
-  technical: boolean;
 }) {
   if (!entry)
     return <Text dimColor>Select a skill to inspect its installations.</Text>;
-  const wrapped = inspectorLines(entry, width, technical);
+  const wrapped = inspectorLines(entry, width);
   const page = Math.max(1, lines - 1);
   const start = Math.min(offset, Math.max(0, wrapped.length - page));
   return (
@@ -368,8 +369,8 @@ function Inspector({
         </Line>
       ))}
       <Line tone={color.accent}>
-        {technical ? "Technical details" : "Overview"} · {start + 1}–
-        {Math.min(start + page, wrapped.length)}/{wrapped.length}
+        Details · {start + 1}–{Math.min(start + page, wrapped.length)}/
+        {wrapped.length}
       </Line>
     </Box>
   );
@@ -396,7 +397,7 @@ export function SkilloomApp({
   const [ownership, setOwnership] = useState("all");
   const [index, setIndex] = useState(0);
   const [details, setDetails] = useState(false);
-  const [technical, setTechnical] = useState(false);
+  const [enriching, setEnriching] = useState(false);
   const [detailOffset, setDetailOffset] = useState(0);
   const [settingsIndex, setSettingsIndex] = useState(0);
   const [changeIndex, setChangeIndex] = useState(0);
@@ -456,6 +457,46 @@ export function SkilloomApp({
   useEffect(() => {
     if (!initialInventory) void load(false);
   }, []);
+  useEffect(() => {
+    if (!inventory || !backend.enrich) return;
+    const localSkills = [
+      ...inventory.globalSkills,
+      ...inventory.projects.flatMap((project) =>
+        project.checkouts.flatMap((checkout) => checkout.skills ?? []),
+      ),
+    ];
+    if (
+      inventory.skillUsage &&
+      localSkills.every((skill) => !skill.installed || skill.metadata)
+    ) {
+      setEnriching(false);
+      return;
+    }
+    let active = true;
+    const original = inventory;
+    setEnriching(true);
+    void backend
+      .enrich(original)
+      .then((enriched) => {
+        if (active) {
+          setEnriching(false);
+          setInventory((current) =>
+            current === original ? enriched : current,
+          );
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setEnriching(false);
+          setNotice(
+            `Metadata unavailable: ${errorText(error)}. Press r to retry.`,
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [backend, inventory]);
   const entries = useMemo(
     () => (inventory ? buildLibrary(inventory) : []),
     [inventory],
@@ -1158,14 +1199,13 @@ export function SkilloomApp({
       sourceForm();
       return;
     }
-    if (details && input === "i") {
-      setTechnical(!technical);
-      setDetailOffset(0);
-      return;
-    }
-    if (key.return && view === "Library" && !details && selected) {
+    if (
+      (key.return || input === "i") &&
+      view === "Library" &&
+      !details &&
+      selected
+    ) {
       setDetails(true);
-      setTechnical(false);
       setDetailOffset(0);
       return;
     }
@@ -1173,9 +1213,7 @@ export function SkilloomApp({
       const update = setDetailOffset;
       const max = Math.max(
         0,
-        (selected
-          ? inspectorLines(selected, size.width, technical).length
-          : 0) -
+        (selected ? inspectorLines(selected, size.width).length : 0) -
           (bodyHeight - 1),
       );
       if (key.downArrow || input === "j" || key.pageDown)
@@ -1222,15 +1260,15 @@ export function SkilloomApp({
           ? "Enter/Esc results · ↑↓ select"
           : details
             ? tiny
-              ? "Esc results · i more · ↑↓ scroll"
-              : `Esc results · ↑↓ scroll · i ${technical ? "hide technical details" : "technical details"}`
+              ? "Esc results · ↑↓ scroll"
+              : "Esc results · ↑↓ scroll"
             : view !== "Library"
               ? tiny
                 ? "↑↓ select · Enter open · Esc library"
                 : `↑↓ select   Enter ${view === "Changes" ? "open" : "choose"}   Tab/Shift-Tab views   Esc library`
               : tiny
-                ? "↑↓ select · Enter open · / search · ?"
-                : `↑↓ select   Enter open   / search   ? help   q quit`;
+                ? "↑↓ select · Enter/i details · / search · ?"
+                : `↑↓ select   Enter/i details   / search   ? help   q quit`;
   let content: React.ReactNode;
   if (outcome) {
     const lines = wrapLines(
@@ -1257,12 +1295,12 @@ export function SkilloomApp({
         {[
           "1–3 views · Tab next · Shift-Tab back",
           "/ search · Enter/Esc results",
-          "↑↓ or j/k select · Enter details",
+          "↑↓ or j/k select · Enter/i details",
           "←/→ machine · g scope · o ownership",
           "x clear filters · r refresh",
           "s review sync · y apply in review",
           "a add · d remove · v verify source",
-          "Details: Esc results · i technical",
+          "Details: Esc results · ↑↓ scroll",
           "Invoke: Manual / Auto / Both / ? unknown",
           "Mixed varies; Partial has unknowns",
           "Used by: observed read/invocation",
@@ -1404,7 +1442,6 @@ export function SkilloomApp({
         lines={bodyHeight}
         width={size.width}
         offset={detailOffset}
-        technical={technical}
       />
     );
   else
@@ -1602,13 +1639,17 @@ export function SkilloomApp({
           {safeText(
             busy
               ? progress
-              : error ||
+              : enriching
+                ? "Loading skill metadata · browsing stays available"
+                : error ||
                   notice ||
                   (view !== "Library"
                     ? " "
-                    : inventory?.cached
-                      ? "Saved inventory · r refreshes this machine"
-                      : "Installation changes require review."),
+                    : inventory?.skillUsage
+                      ? "— no evidence · ? unknown · r refresh"
+                      : inventory?.cached
+                        ? "Metadata not collected · r refresh"
+                        : "Installation changes require review."),
           )}
         </Text>
       </Box>

@@ -31,6 +31,49 @@ const mount = (width = 120, api = backend()) => {
 };
 
 describe("full-screen skill library", () => {
+  it("hydrates an older snapshot without blocking selection or rescanning inventory", async () => {
+    const old = inventoryFixture();
+    delete old.skillUsage;
+    delete old.globalSkills[0]!.metadata;
+    let finish!: (inventory: typeof old) => void;
+    const api = {
+      ...backend(),
+      enrich: vi.fn(
+        () =>
+          new Promise<typeof old>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    };
+    const app = render(
+      <SkilloomApp
+        initialInventory={old}
+        backend={api}
+        width={100}
+        height={32}
+      />,
+    );
+    mounted.push(app);
+    await tick();
+    expect(app.lastFrame()).toContain("Loading skill metadata");
+    app.stdin.write("\u001b[B");
+    await tick();
+    expect(app.lastFrame()).toContain("› design-system");
+    const enriched = inventoryFixture();
+    enriched.projects[0]!.checkouts[0]!.skills![0]!.metadata = {
+      source: "skill-declaration",
+      invocation: "unknown",
+      variants: [],
+    };
+    finish(enriched);
+    await tick();
+    expect(app.lastFrame()).toContain("› design-system");
+    expect(app.lastFrame()).toContain("Both");
+    expect(app.lastFrame()).not.toContain("Loading skill metadata");
+    expect(api.load).not.toHaveBeenCalled();
+    expect(api.execute).not.toHaveBeenCalled();
+    expect(api.enrich).toHaveBeenCalledTimes(1);
+  });
   it.each([40, 100, 140])(
     "shows declared invocation and observed usage columns at %i columns",
     async (width) => {
@@ -398,13 +441,15 @@ describe("full-screen skill library", () => {
     expect(app.lastFrame()).toContain("Results");
     expect(app.lastFrame()).toContain("1 skills");
   });
-  it("exits details before starting another search and hides technical metadata by default", async () => {
+  it("opens the same complete details with i or Enter and exits before search", async () => {
     const app = mount();
     await tick();
     app.stdin.write("\r");
     await tick();
     expect(app.lastFrame()).toContain("Skill details");
-    expect(app.lastFrame()).not.toContain("Last observed");
+    expect(app.lastFrame()).toContain("Last observed");
+    app.stdin.write("\u001b");
+    await tick();
     app.stdin.write("i");
     await tick();
     expect(app.lastFrame()).toContain("Last observed");
@@ -418,7 +463,7 @@ describe("full-screen skill library", () => {
     expect(app.lastFrame()).not.toContain("Skill details");
     expect(app.lastFrame()).not.toContain("Editing search");
   });
-  it("groups identical checkout facts while retaining individual paths on demand", async () => {
+  it("groups identical checkout facts and shows their paths without another mode", async () => {
     const inventory = inventoryFixture();
     inventory.projects[0]!.checkouts.push({
       path: "/workspace/other",
@@ -443,9 +488,7 @@ describe("full-screen skill library", () => {
     app.stdin.write("\r");
     await tick();
     expect(app.lastFrame()).toContain("catalog (2 locations)");
-    expect(app.lastFrame()).not.toContain("/workspace/");
-    app.stdin.write("i");
-    await tick();
+
     expect(app.lastFrame()).toContain("/workspace/catalog");
     expect(app.lastFrame()).toContain("/workspace/other");
   });

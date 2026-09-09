@@ -1,3 +1,5 @@
+import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { render } from "ink";
 import { createElement } from "react";
 import { loadCurrentInventory } from "../cli/inventory.js";
@@ -8,6 +10,8 @@ import {
   resolveConfigPaths,
   saveInventorySnapshot,
 } from "../core/config.js";
+import { enrichInventoryMetadata } from "../core/enrich-metadata.js";
+import type { MachineInventory } from "../core/types.js";
 import {
   type CommandResult,
   type DashboardBackend,
@@ -55,6 +59,34 @@ export function createDashboardBackend(
       stopping = true;
       await cancelRead();
       await Promise.allSettled([...tasks].map((task) => task.promise));
+    },
+    async enrich(inventory: MachineInventory) {
+      return track(true, async (signal) => {
+        const original = structuredClone(inventory);
+        const enriched = await enrichInventoryMetadata(
+          original,
+          runtime.env,
+          join(dirname(paths.inventoryPath), "skill-usage-cache.json"),
+          signal,
+        );
+        signal?.throwIfAborted();
+        const saved = await loadInventorySnapshot(paths.inventoryPath);
+        const comparable = (value: MachineInventory) => {
+          const { cached: _cached, ...snapshot } = value;
+          return snapshot;
+        };
+        if (
+          saved &&
+          isDeepStrictEqual(comparable(saved), comparable(original))
+        ) {
+          signal?.throwIfAborted();
+          await saveInventorySnapshot(paths.inventoryPath, {
+            ...enriched,
+            cached: saved.cached,
+          });
+        }
+        return enriched;
+      });
     },
     async load(refresh, onProgress) {
       return track(true, async (signal) => {

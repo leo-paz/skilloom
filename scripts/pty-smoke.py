@@ -229,7 +229,8 @@ def fixture(home):
     (app / "machine.json").write_text(json.dumps(dict(version=1, id="11111111-1111-4111-8111-111111111111", name="PTY Mac", workspaces=[])))
     def skill(name, **extra):
         value = dict(name=name, source="acme/skills", agents=["codex"], scope="global", installed=True,
-                     desired=False, managed=False, ownership="personal", reasons=[])
+                     desired=False, managed=False, ownership="personal", reasons=[],
+                     metadata=dict(source="skill-declaration", invocation="unknown", variants=[]))
         value.update(extra)
         return value
     skills = [skill("alpha-review", managed=True, desired=True, metadata=dict(source="skill-declaration", invocation="both", variants=[dict(agent="codex", invocation="both", status="read")])), skill("bravo-writing"), skill("charlie-testing", source=None)]
@@ -281,8 +282,8 @@ def exercise(executable, home, width, height):
         terminal.send(b"\r", "full-page details at every width", lambda text: "Skill details" in text and "bravo-writing" in text and "Esc results" in text)
         assert "Preview" not in terminal.screen.text(), "Details left the preview pane visible"
         assert "Ownership" not in terminal.screen.text(), "Details left the library table visible"
-        assert "Last observed" not in terminal.screen.text(), "Technical metadata is expanded by default"
-        terminal.send(b"i", "explicit technical metadata", lambda text: "Last observed" in text)
+        terminal.send(b"\x1b", "return before i shortcut", lambda text: "Results" in text)
+        terminal.send(b"i", "i opens full details from results", lambda text: "Skill details" in text)
         terminal.send(b"/", "search from details returns to results", lambda text: "Editing search" in text and "Results" in text and "Skill details" not in text and "bravo-writing" in text)
         terminal.send(b"\r", "search Enter focuses preserved results", lambda text: "Editing search" not in text and "▏" not in text and "Results" in text and "bravo-writing" in text and "· global ·" in text)
         terminal.send(b"\r", "reopen explicit details", lambda text: "Skill details" in text and "bravo-writing" in text)
