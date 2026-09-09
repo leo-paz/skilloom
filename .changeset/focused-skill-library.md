@@ -2,4 +2,4 @@
 "skilloom": patch
 ---
 
-Focus Library rows on skill names, ownership and machine counts. Keep invocation declarations and read evidence in the details view, and give long skill names the reclaimed space.
+Show a concise Invocation column alongside skill names, with a dash for unavailable metadata. Keep read evidence in details and label machine counts clearly.

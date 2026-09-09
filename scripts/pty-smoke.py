@@ -258,7 +258,8 @@ def exercise(executable, home, width, height):
     try:
         terminal.wait("initial populated library", lambda text: "alpha-review" in text and "bravo-writing" in text)
         assert terminal.screen.alternate, "Dashboard did not enter alternate screen"
-        assert "Invoke" not in terminal.screen.text() and "Evidence" not in terminal.screen.text(), "Metadata still clutters the library"
+        assert "Invocation" in terminal.screen.text() and "Both" in terminal.screen.text() and "—" in terminal.screen.text(), "Invocation column missing or unknown mode not marked"
+        assert "Evidence" not in terminal.screen.text(), "Evidence still clutters the library"
         if width >= 65:
             assert "Ownership" in terminal.screen.text() and "Machines" in terminal.screen.text(), "Library columns missing"
         terminal.wait("raw input enabled", lambda _: not (termios.tcgetattr(terminal.slave)[3] & termios.ICANON))

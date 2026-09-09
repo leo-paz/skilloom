@@ -851,7 +851,7 @@ export function SkilloomApp({
   );
   const skillColumnWidth = Math.max(
     8,
-    (narrow ? size.width : Math.floor(size.width * 0.7)) - 4 - (tiny ? 0 : 22),
+    (narrow ? size.width : Math.floor(size.width * 0.7)) - 4 - (tiny ? 10 : 34),
   );
   const pageSize = Math.max(1, bodyHeight - 4);
   useEffect(() => {
@@ -1758,6 +1758,9 @@ export function SkilloomApp({
             <Box width={skillColumnWidth} paddingRight={1}>
               <Text bold>Skill</Text>
             </Box>
+            <Box width={tiny ? 10 : 12}>
+              <Text dimColor>Invocation</Text>
+            </Box>
             {!tiny && (
               <Box width={12}>
                 <Text dimColor>Ownership</Text>
@@ -1785,6 +1788,17 @@ export function SkilloomApp({
                   >
                     {offset + i === index ? "› " : "  "}
                     {safeText(row.name)}
+                  </Text>
+                </Box>
+                <Box width={tiny ? 10 : 12}>
+                  <Text
+                    {...(row.invocation === "unknown" ||
+                    row.invocation === "partial"
+                      ? { color: color.muted }
+                      : {})}
+                    wrap="truncate-end"
+                  >
+                    {invocationLabel(row.invocation)}
                   </Text>
                 </Box>
                 {!tiny && (

@@ -79,13 +79,15 @@ describe("full-screen skill library", () => {
     expect(api.enrich).toHaveBeenCalledTimes(1);
   });
   it.each([40, 100, 140])(
-    "keeps metadata in details and the library focused on skills at %i columns",
+    "shows invocation and keeps read evidence in details at %i columns",
     async (width) => {
       const api = backend();
       const app = mount(width, api);
       await tick();
       expect(app.lastFrame()).toContain("code-review");
-      expect(app.lastFrame()).not.toContain("Invoke");
+      expect(app.lastFrame()).toContain("Invocation");
+      expect(app.lastFrame()).toContain("Both");
+      expect(app.lastFrame()).toContain("—");
       expect(app.lastFrame()).not.toContain("Evidence");
       if (width >= 65) {
         expect(app.lastFrame()).toContain("Ownership");
