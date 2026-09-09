@@ -44,6 +44,7 @@ describe("published usage attribution and fleet coverage", () => {
     remote.skillUsage = {
       ...structuredClone(inventory.skillUsage!),
       usage: [{ ...inventory.skillUsage!.usage[0]!, harness: "pi", count: 3 }],
+      history: [{ ...inventory.skillUsage!.history![0]!, harness: "pi" }],
     };
     const records = queryInventory(inventory, { query: "code-review" });
     expect(
@@ -65,6 +66,17 @@ describe("published usage attribution and fleet coverage", () => {
       records.find((r) => r.checkoutPath === "/first")?.nameEvidence?.[0]
         ?.evidence,
     ).toBe("invoke");
+    expect(
+      records.find((r) => r.checkoutPath === "/first")?.usageHistory,
+    ).toEqual([]);
+    expect(
+      records.find((r) => r.machine.id === "remote")?.usageHistory?.[0]
+        ?.harness,
+    ).toBe("pi");
+    expect(
+      records.find((r) => r.machine.id === "local" && r.scope === "global")
+        ?.usageHistory?.[0]?.harness,
+    ).toBe("codex");
     expect(
       queryInventory(inventory, { source: "second/source" })[0]?.usedBy,
     ).toEqual([]);

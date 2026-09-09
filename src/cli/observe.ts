@@ -22,6 +22,8 @@ function comparable(inventory: MachineInventory): string {
           skillUsage: {
             version: inventory.skillUsage.version,
             usage: inventory.skillUsage.usage,
+            history: inventory.skillUsage.history,
+            historyTruncated: inventory.skillUsage.historyTruncated,
             coverage: inventory.skillUsage.coverage.status,
           },
         }
@@ -43,6 +45,8 @@ function comparablePublished(content: string): string {
             skillUsage: {
               version: parsed.skillUsage.version,
               usage: parsed.skillUsage.usage,
+              history: parsed.skillUsage.history,
+              historyTruncated: parsed.skillUsage.historyTruncated,
               coverage: parsed.skillUsage.coverage.status,
             },
           }

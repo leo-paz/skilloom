@@ -21,9 +21,21 @@ export interface SkillUsage {
   lastUsedAt: string;
   pathId?: string | undefined;
 }
+export interface SkillUsageEvent {
+  id: string;
+  name: string;
+  harness: SkillHarness;
+  evidence: "invoke" | "read";
+  at: string;
+  pathId?: string | undefined;
+  /** Opaque session identity, never transcript text or a local path. */
+  sessionId?: string | undefined;
+}
 export interface SkillUsageScan {
   version: 2;
   usage: SkillUsage[];
+  history?: SkillUsageEvent[] | undefined;
+  historyTruncated?: boolean | undefined;
   coverage: {
     status: "complete" | "incomplete";
     filesDiscovered: number;
@@ -48,6 +60,27 @@ export const skillUsageScanSchema = z.object({
         .optional(),
     }),
   ),
+  history: z
+    .array(
+      z.object({
+        id: z.string().regex(/^[a-f0-9]{64}$/),
+        name: z.string().max(256),
+        harness: z.enum(["codex", "claude", "pi"]),
+        evidence: z.enum(["invoke", "read"]),
+        at: z.string().datetime({ offset: true }),
+        pathId: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional(),
+        sessionId: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional(),
+      }),
+    )
+    .max(1000)
+    .optional(),
+  historyTruncated: z.boolean().optional(),
   coverage: z.object({
     status: z.enum(["complete", "incomplete"]),
     filesDiscovered: z.number().int().nonnegative(),
@@ -69,21 +102,14 @@ interface Cursor {
   mtimeMs: number;
   cwd: string;
   sessionId: string;
+  inheritedBefore?: string | undefined;
   pending: Pending[];
   omittedHistory: boolean;
 }
-interface Event {
-  id: string;
-  name: string;
-  harness: SkillHarness;
-  evidence: "invoke" | "read";
-  at: string;
-  pathId?: string | undefined;
-}
 interface Cache {
-  version: 2;
+  version: 3;
   files: Record<string, Cursor>;
-  events: Event[];
+  events: SkillUsageEvent[];
   omittedEvents: boolean;
   knownFingerprint?: string;
   lastCoverage?: SkillUsageScan["coverage"];
@@ -125,6 +151,21 @@ function decode(value: unknown): Record<string, unknown> {
 function successfulOutput(value: unknown): boolean {
   const decoded = decode(value);
   if (decoded.exit_code === 0) return true;
+  if (typeof value === "string") {
+    // Match the harness-owned header only, never text inside the command's output.
+    if (
+      /^(?:Chunk ID: [^\n]+\n)?Wall time: [0-9.]+ seconds\nProcess exited with code 0\n(?:Original token count: \d+\n)?Output:(?:\n|$)/.test(
+        value,
+      )
+    )
+      return true;
+    if (
+      /^Exit code: 0\nWall time: [0-9.]+ seconds\n(?:Total output lines: \d+\n)?Output:(?:\n|$)/.test(
+        value,
+      )
+    )
+      return true;
+  }
   // Codex exec wraps process results in MCP text blocks; their output is never stored.
   return array(value).some((item) => decode(object(item).text).exit_code === 0);
 }
@@ -220,7 +261,7 @@ export async function scanSkillUsage(options: {
       ),
   );
   let cache: Cache = {
-    version: 2,
+    version: 3,
     files: {},
     events: [],
     omittedEvents: false,
@@ -242,7 +283,7 @@ export async function scanSkillUsage(options: {
     } finally {
       await handle.close();
     }
-    if (stored.version !== 2) throw new Error("cache version");
+    if (stored.version !== 3) throw new Error("cache version");
     cache.omittedEvents = stored.omittedEvents === true;
     cache.knownFingerprint = text(stored.knownFingerprint);
     const previousCoverage = skillUsageScanSchema.shape.coverage.safeParse(
@@ -266,6 +307,11 @@ export async function scanSkillUsage(options: {
         offset: Number(cursor.offset),
         mtimeMs: Number(cursor.mtimeMs) || 0,
         sessionId: text(cursor.sessionId).slice(0, 256),
+        inheritedBefore: Number.isFinite(
+          Date.parse(text(cursor.inheritedBefore)),
+        )
+          ? text(cursor.inheritedBefore)
+          : undefined,
         cwd: isAbsolute(text(cursor.cwd)) ? text(cursor.cwd) : "",
         omittedHistory: cursor.omittedHistory === true,
         pending: array(cursor.pending)
@@ -313,9 +359,12 @@ export async function scanSkillUsage(options: {
                 id: text(event.id),
                 name: text(event.name),
                 harness: event.harness as SkillHarness,
-                evidence: event.evidence as Event["evidence"],
+                evidence: event.evidence as SkillUsageEvent["evidence"],
                 at: text(event.at),
                 ...(event.pathId ? { pathId: text(event.pathId) } : {}),
+                ...(/^[a-f0-9]{64}$/.test(text(event.sessionId))
+                  ? { sessionId: text(event.sessionId) }
+                  : {}),
               },
             ]
           : [];
@@ -334,6 +383,13 @@ export async function scanSkillUsage(options: {
           path: join(
             options.env.CODEX_HOME || join(home, ".codex"),
             "sessions",
+          ),
+          harness: "codex",
+        },
+        {
+          path: join(
+            options.env.CODEX_HOME || join(home, ".codex"),
+            "archived_sessions",
           ),
           harness: "codex",
         },
@@ -451,6 +507,9 @@ export async function scanSkillUsage(options: {
         harness,
         evidence: pending.evidence,
         at: pending.at,
+        ...(cursor.sessionId
+          ? { sessionId: digest(`${harness}:${cursor.sessionId}`) }
+          : {}),
         ...(pathId ? { pathId } : {}),
       });
     }
@@ -470,6 +529,24 @@ export async function scanSkillUsage(options: {
           ? text(record.id)
           : "");
     if (sessionId && sessionId.length <= 256) cursor.sessionId = sessionId;
+    if (
+      harness === "pi" &&
+      record.type === "session" &&
+      record.parentSession &&
+      Number.isFinite(Date.parse(text(record.timestamp)))
+    )
+      cursor.inheritedBefore = text(record.timestamp);
+    // Pi forks copy earlier entries verbatim into a new session, sometimes with a
+    // different cwd. Do not treat those copies as fresh executions at the new cwd.
+    if (
+      harness === "pi" &&
+      record.type === "message" &&
+      cursor.inheritedBefore &&
+      Date.parse(text(record.timestamp)) < Date.parse(cursor.inheritedBefore)
+    ) {
+      cursor.omittedHistory = true;
+      return;
+    }
     const contextPath =
       text(record.cwd) ||
       (["session_meta", "turn_context"].includes(text(record.type))
@@ -490,7 +567,9 @@ export async function scanSkillUsage(options: {
         evidence = "invoke";
       } else if (["read", "Read", "read_file"].includes(text(name)))
         matched = matchPath(args.path ?? args.file_path, cursor.cwd);
-      else if (["exec_command", "Bash", "bash"].includes(text(name)))
+      else if (
+        ["exec_command", "shell_command", "Bash", "bash"].includes(text(name))
+      )
         matched = commandReads(
           text(args.cmd ?? args.command),
           text(args.workdir) || cursor.cwd,
@@ -579,8 +658,8 @@ export async function scanSkillUsage(options: {
   const ordered = candidates.sort((a, b) => b.modified - a.modified);
   if (ordered.length > LIMITS.files) limits.add("files");
   const fairFiles: Candidate[] = [];
-  const byHarness = roots.map((root) =>
-    ordered.filter((file) => file.harness === root.harness),
+  const byHarness = (["codex", "claude", "pi"] as const).map((harness) =>
+    ordered.filter((file) => file.harness === harness),
   );
   for (
     let index = 0;
@@ -704,8 +783,8 @@ export async function scanSkillUsage(options: {
       limits.add("unreadable");
     }
   }
-  const retained = [...events.values()].sort((a, b) =>
-    a.at.localeCompare(b.at),
+  const retained = [...events.values()].sort(
+    (a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id.localeCompare(b.id),
   );
   if (retained.length > LIMITS.events) cache.omittedEvents = true;
   cache.events = retained.slice(-LIMITS.events);
@@ -768,6 +847,8 @@ export async function scanSkillUsage(options: {
         a.harness.localeCompare(b.harness) ||
         a.evidence.localeCompare(b.evidence),
     ),
+    history: cache.events.slice(-1000).reverse(),
+    historyTruncated: cache.omittedEvents || cache.events.length > 1000,
     coverage,
   };
 }

@@ -234,6 +234,27 @@ const scanLabel = (status: string): string =>
     : status === "incomplete"
       ? "Partial scan"
       : "Complete scan";
+function detailTableRow(
+  values: string[],
+  widths: number[],
+  header = false,
+): DetailLine[] {
+  const columns = values.map((value, index) =>
+    wrapText(value, widths[index]! - 3),
+  );
+  return Array.from(
+    { length: Math.max(...columns.map((column) => column.length)) },
+    (_, i) => ({
+      text: "",
+      cells: columns.map((column, index) => ({
+        text: column[i] ?? "",
+        width: widths[index]!,
+        tone: header ? color.muted : undefined,
+        bold: header,
+      })),
+    }),
+  );
+}
 function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
   const usableWidth = Math.min(112, Math.max(12, width - 2));
   const wide = usableWidth >= 96;
@@ -498,6 +519,86 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
         : [...installation, { text: " " }, ...behavior]),
     );
   }
+  const history = [
+    ...new Map(
+      entry.occurrences.flatMap((record) =>
+        (record.usageHistory ?? []).map(
+          (event) =>
+            [
+              `${record.machine.id}:${event.id}`,
+              { ...event, machine: record.machine.name },
+            ] as const,
+        ),
+      ),
+    ).values(),
+  ].sort(
+    (a, b) => Date.parse(b.at) - Date.parse(a.at) || a.id.localeCompare(b.id),
+  );
+  content.push(
+    { text: " " },
+    { text: "Recent activity", bold: true },
+    { text: " " },
+  );
+  if (history.length) {
+    if (usableWidth >= 76)
+      content.push(
+        ...detailTableRow(
+          ["When (UTC)", "Agent", "Event", "Machine"],
+          [23, 12, 20, usableWidth - 55],
+          true,
+        ),
+        { text: " " },
+      );
+    for (const event of history.slice(0, 20)) {
+      const at = Number.isFinite(Date.parse(event.at))
+        ? new Date(event.at).toISOString().slice(0, 19).replace("T", " ")
+        : "Unknown";
+      const label =
+        event.evidence === "read"
+          ? "Read SKILL.md"
+          : event.pathId
+            ? "Invoked"
+            : "Invoked by name";
+      if (usableWidth >= 76)
+        content.push(
+          ...detailTableRow(
+            [at, harnessLabel(event.harness), label, event.machine],
+            [23, 12, 20, usableWidth - 55],
+          ),
+        );
+      else
+        content.push(
+          { text: `${at} UTC`, tone: color.muted },
+          ...field("Machine", event.machine, usableWidth),
+          ...field(harnessLabel(event.harness), label, usableWidth),
+          { text: " " },
+        );
+    }
+    if (history.some((event) => !event.pathId))
+      content.push(
+        { text: " " },
+        {
+          text: "Name-only invocations do not identify an installation.",
+          tone: color.muted,
+        },
+      );
+    if (
+      history.length > 20 ||
+      entry.occurrences.some((record) => record.historyTruncated)
+    )
+      content.push({
+        text: "Showing the latest retained events. Older events are omitted.",
+        tone: color.muted,
+      });
+  } else
+    content.push({
+      text: entry.occurrences.some(
+        (record) => record.usageHistory !== undefined,
+      )
+        ? "No matching events in the retained history."
+        : "History not collected. Refresh on the originating machine.",
+      tone: color.muted,
+    });
   content.push(
     { text: " " },
     { text: " " },
@@ -510,23 +611,8 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       Math.floor(usableWidth * 0.26),
     ];
     widths.push(usableWidth - widths[0]! - widths[1]!);
-    const tableRow = (values: string[], header = false) => {
-      const columns = values.map((value, index) =>
-        wrapText(value, widths[index]! - 3),
-      );
-      return Array.from(
-        { length: Math.max(...columns.map((column) => column.length)) },
-        (_, i) => ({
-          text: "",
-          cells: columns.map((column, index) => ({
-            text: column[i] ?? "",
-            width: widths[index]!,
-            tone: header ? color.muted : undefined,
-            bold: header,
-          })),
-        }),
-      );
-    };
+    const tableRow = (values: string[], header = false) =>
+      detailTableRow(values, widths, header);
     content.push(...tableRow(["Machine", "Scan", "Collected"], true), {
       text: " ",
     });
@@ -761,6 +847,7 @@ export function SkilloomApp({
     ];
     if (
       inventory.skillUsage?.version === 2 &&
+      inventory.skillUsage.history !== undefined &&
       localSkills.every((skill) => !skill.installed || skill.metadata)
     ) {
       setEnriching(false);

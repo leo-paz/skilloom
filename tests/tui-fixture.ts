@@ -68,6 +68,16 @@ export const inventoryFixture = (): MachineInventory => ({
   operations: [],
   skillUsage: {
     version: 2,
+    history: [
+      {
+        id: "d".repeat(64),
+        name: "code-review",
+        harness: "codex",
+        evidence: "read",
+        pathId: "a".repeat(64),
+        at: "2026-09-08T11:00:00.000Z",
+      },
+    ],
     usage: [
       {
         name: "code-review",

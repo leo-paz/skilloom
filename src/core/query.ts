@@ -1,3 +1,4 @@
+import type { SkillUsageEvent } from "./skill-usage.js";
 import type { InventorySkill, MachineInventory, Scope } from "./types.js";
 
 export interface InventoryQuery {
@@ -19,6 +20,8 @@ export interface InventoryOccurrence extends InventorySkill {
       }>
     | undefined;
   nameEvidence?: InventoryOccurrence["usedBy"];
+  usageHistory?: SkillUsageEvent[] | undefined;
+  historyTruncated?: boolean | undefined;
   usageCoverage?: string | undefined;
   usageObservedAt?: string | undefined;
   machine: { id: string; name: string };
@@ -99,6 +102,8 @@ export function queryInventory(
       coverage: string;
       observedAt: string;
       skills: Map<string, NonNullable<InventoryOccurrence["usedBy"]>>;
+      history: Map<string, SkillUsageEvent[]> | undefined;
+      historyTruncated: boolean;
     }
   >();
   for (const snapshot of [inventory, ...(inventory.remoteObservations ?? [])]) {
@@ -116,10 +121,21 @@ export function queryInventory(
       rows.push(item);
       skills.set(item.name, rows);
     }
+    const history =
+      snapshot.skillUsage.history === undefined
+        ? undefined
+        : new Map<string, SkillUsageEvent[]>();
+    for (const event of snapshot.skillUsage.history ?? []) {
+      const rows = history!.get(event.name) ?? [];
+      rows.push(event);
+      history!.set(event.name, rows);
+    }
     usageByMachine.set(snapshot.machine.id, {
       coverage: snapshot.skillUsage.coverage.status,
       observedAt: snapshot.skillUsage.coverage.observedAt,
       skills,
+      history,
+      historyTruncated: snapshot.skillUsage.historyTruncated === true,
     });
   }
   for (const record of records) {
@@ -130,6 +146,15 @@ export function queryInventory(
         (item) => item.pathId && record.usagePathIds?.includes(item.pathId),
       );
       record.nameEvidence = evidence.filter((item) => !item.pathId);
+      record.usageHistory =
+        usage.history
+          ?.get(record.name)
+          ?.filter((event) =>
+            event.pathId
+              ? record.usagePathIds?.includes(event.pathId)
+              : event.evidence === "invoke",
+          ) ?? (usage.history ? [] : undefined);
+      record.historyTruncated = usage.historyTruncated;
       record.usageObservedAt = usage.observedAt;
       record.usageCoverage = usage.coverage;
     }

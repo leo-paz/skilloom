@@ -156,10 +156,10 @@ export function invocationLabel(value: string): string {
         both: "Manual + automatic",
         disabled: "Disabled",
         mixed: "Mixed",
-        partial: "—",
-        unknown: "—",
+        partial: "Unknown",
+        unknown: "Unknown",
       } as Record<string, string>
-    )[value] ?? "—"
+    )[value] ?? "Unknown"
   );
 }
 export function harnessLabel(value: string, compact = false): string {

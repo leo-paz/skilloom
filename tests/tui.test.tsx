@@ -87,7 +87,7 @@ describe("full-screen skill library", () => {
       expect(app.lastFrame()).toContain("code-review");
       expect(app.lastFrame()).toContain("Invocation");
       expect(app.lastFrame()).toContain("Automatic");
-      expect(app.lastFrame()).toContain("—");
+      expect(app.lastFrame()).toContain("Unknown");
       expect(app.lastFrame()).not.toContain("Evidence");
       if (width >= 65) {
         expect(app.lastFrame()).toContain("Ownership");
@@ -100,6 +100,10 @@ describe("full-screen skill library", () => {
       app.stdin.write("\u001b[F");
       await tick();
       expect(app.lastFrame()).toContain("Partial scan");
+      if (width >= 100) {
+        expect(app.lastFrame()).toContain("Recent activity");
+        expect(app.lastFrame()).toContain("Read SKILL.md");
+      }
     },
   );
   it("groups automatic-capable copies together while preserving their declarations", () => {

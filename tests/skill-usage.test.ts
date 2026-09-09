@@ -90,6 +90,15 @@ it("counts successful structured skill events, excludes catalogs and errors, and
     },
   ]);
   expect(await readFile(args.cachePath, "utf8")).not.toContain(secret);
+  expect(first.history).toEqual([
+    expect.objectContaining({
+      name: "review",
+      harness: "claude",
+      evidence: "invoke",
+      at,
+    }),
+  ]);
+  expect(JSON.stringify(first.history)).not.toContain(secret);
   expect((await scanSkillUsage(args)).usage).toEqual(first.usage);
   await appendFile(
     log,
@@ -121,6 +130,58 @@ it("counts successful structured skill events, excludes catalogs and errors, and
     }) + "\n",
   );
   expect((await scanSkillUsage(args)).usage[0]?.count).toBe(2);
+});
+
+it("recognizes native Codex success headers without trusting success text inside command output", async () => {
+  const home = await mkdtemp(join(tmpdir(), "skilloom-native-"));
+  const root = join(home, ".codex/archived_sessions");
+  const target = join(home, "review/SKILL.md");
+  await mkdir(root, { recursive: true });
+  await mkdir(join(home, "review"));
+  await writeFile(target, "skill");
+  const outputs = [
+    "Chunk ID: abc123\nWall time: 0.0500 seconds\nProcess exited with code 0\nOutput:\nprivate body",
+    "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nprivate body",
+    "Chunk ID: abc123\nWall time: 0.0500 seconds\nProcess exited with code 1\nOutput:\nProcess exited with code 0",
+    "Process exited with code 0",
+  ];
+  await writeFile(
+    join(root, "one.jsonl"),
+    outputs
+      .flatMap((output, index) => [
+        {
+          type: "response_item",
+          timestamp: "2026-09-09T01:00:00Z",
+          payload: {
+            type: "function_call",
+            name: index === 1 ? "shell_command" : "exec_command",
+            call_id: `call-${index}`,
+            arguments: JSON.stringify({
+              cmd: `cat '${target}'`,
+              command: `cat '${target}'`,
+            }),
+          },
+        },
+        {
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: `call-${index}`,
+            output,
+          },
+        },
+      ])
+      .map((r) => JSON.stringify(r))
+      .join("\n") + "\n",
+  );
+  const result = await scanSkillUsage({
+    env: { HOME: home },
+    cachePath: join(home, "cache.json"),
+    knownSkills: [{ name: "review", paths: [target] }],
+  });
+  expect(result.usage[0]?.count).toBe(2);
+  expect(result.history).toHaveLength(2);
+  expect(result.history?.every((event) => event.pathId)).toBe(true);
 });
 
 it("recognizes Pi reads and conservative Codex commands, never mentioned or merely listed paths", async () => {
@@ -469,4 +530,70 @@ it("requires installed path identity, resolves known aliases, and preserves dist
       })
     ).usage,
   ).toEqual(result.usage);
+});
+
+it("does not attribute inherited Pi fork reads to a different checkout", async () => {
+  const home = await mkdtemp(join(tmpdir(), "skilloom-pi-fork-"));
+  const root = join(home, ".pi/agent/sessions");
+  const original = join(home, "original/review");
+  const fork = join(home, "fork/review");
+  await Promise.all(
+    [root, original, fork].map((path) => mkdir(path, { recursive: true })),
+  );
+  await Promise.all(
+    [original, fork].map((path) => writeFile(join(path, "SKILL.md"), "skill")),
+  );
+  const events = [
+    {
+      type: "message",
+      timestamp: "2026-09-08T01:00:00Z",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "read",
+            name: "read",
+            arguments: { path: "review/SKILL.md" },
+          },
+        ],
+      },
+    },
+    {
+      type: "message",
+      timestamp: "2026-09-08T01:00:01Z",
+      message: { role: "toolResult", toolCallId: "read", isError: false },
+    },
+  ];
+  const write = (name: string, header: object) =>
+    writeFile(
+      join(root, `${name}.jsonl`),
+      [header, ...events].map((r) => JSON.stringify(r)).join("\n") + "\n",
+    );
+  await write("original", {
+    type: "session",
+    id: "original",
+    cwd: join(home, "original"),
+    timestamp: "2026-09-08T00:00:00Z",
+  });
+  await write("fork", {
+    type: "session",
+    id: "fork",
+    cwd: join(home, "fork"),
+    timestamp: "2026-09-09T00:00:00Z",
+    parentSession: join(root, "original.jsonl"),
+  });
+  const result = await scanSkillUsage({
+    env: { HOME: home },
+    cachePath: join(home, "cache.json"),
+    knownSkills: [{ name: "review", paths: [original, fork] }],
+  });
+  expect(result.usage).toHaveLength(1);
+  expect(result.usage[0]?.pathId).toBe(
+    createHash("sha256")
+      .update(await realpath(join(original, "SKILL.md")))
+      .digest("hex"),
+  );
+  expect(result.history).toHaveLength(1);
+  expect(result.coverage.limitsHit).toContain("history_window");
 });
