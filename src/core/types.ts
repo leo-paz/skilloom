@@ -76,6 +76,8 @@ export interface LocalMachine {
 }
 
 export interface InventorySkill {
+  path?: string | undefined;
+  usagePathIds?: string[] | undefined;
   metadata?: SkillMetadata | undefined;
   detectedAgents?: string[] | undefined;
   ownership?: "repository" | "personal" | undefined;

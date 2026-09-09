@@ -8,6 +8,12 @@ export interface LibraryEntry {
   machines: string[];
   invocation: string;
   usedBy: string[];
+  usageMachines: Array<{
+    id: string;
+    name: string;
+    status: string;
+    observedAt?: string;
+  }>;
 }
 export interface LibraryFilters {
   query: string;
@@ -22,7 +28,10 @@ export function ownershipLabel(skill: InventoryOccurrence): string {
       ? "Managed"
       : "Unmanaged";
 }
-function group(records: InventoryOccurrence[]): LibraryEntry[] {
+function group(
+  records: InventoryOccurrence[],
+  usageMachines: LibraryEntry["usageMachines"],
+): LibraryEntry[] {
   const grouped = new Map<string, InventoryOccurrence[]>();
   for (const record of records)
     grouped.set(record.name, [...(grouped.get(record.name) ?? []), record]);
@@ -36,6 +45,7 @@ function group(records: InventoryOccurrence[]): LibraryEntry[] {
       const owners = [...new Set(occurrences.map(ownershipLabel))];
       return {
         name,
+        usageMachines,
         invocation:
           invocations.length === 1
             ? invocations[0]!
@@ -60,7 +70,29 @@ function group(records: InventoryOccurrence[]): LibraryEntry[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 export function buildLibrary(inventory: MachineInventory): LibraryEntry[] {
-  return group(queryInventory(inventory));
+  const machines = new Map(
+    [inventory.machine, ...inventory.machines].map((machine) => [
+      machine.id,
+      machine,
+    ]),
+  );
+  const usageMachines = [...machines.values()].map((machine) => {
+    const snapshot =
+      machine.id === inventory.machine.id
+        ? inventory
+        : inventory.remoteObservations?.find(
+            (record) => record.machine.id === machine.id,
+          );
+    const usage =
+      snapshot?.skillUsage?.version === 2 ? snapshot.skillUsage : undefined;
+    return {
+      id: machine.id,
+      name: machine.name,
+      status: usage?.coverage.status ?? "unscanned",
+      ...(usage ? { observedAt: usage.coverage.observedAt } : {}),
+    };
+  });
+  return group(queryInventory(inventory), usageMachines);
 }
 export function filterLibrary(
   entries: LibraryEntry[],
@@ -97,6 +129,9 @@ export function filterLibrary(
           words.every((word) => haystack.includes(word))
         );
       }),
+    (entries[0]?.usageMachines ?? []).filter(
+      (machine) => filters.machine === "all" || machine.id === filters.machine,
+    ),
   );
 }
 export function safeText(value: unknown): string {
@@ -134,4 +169,24 @@ export function harnessLabel(value: string, compact = false): string {
       } as Record<string, string>
     )[value] ?? safeText(value)
   );
+}
+
+export function usageLabel(entry: LibraryEntry, compact = false): string {
+  const collected = entry.usageMachines.filter(
+    (machine) => machine.status !== "unscanned",
+  );
+  const partial =
+    collected.length < entry.usageMachines.length ||
+    collected.some((machine) => machine.status !== "complete");
+  if (entry.usedBy.length) {
+    const names = entry.usedBy
+      .map((harness) => harnessLabel(harness, compact))
+      .join(" ");
+    return `${names}${partial && !compact ? " · partial" : ""}`;
+  }
+  return collected.length === 0
+    ? "Unscanned"
+    : partial
+      ? "Partial"
+      : "No match";
 }

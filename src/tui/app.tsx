@@ -11,6 +11,7 @@ import {
   observedLabel,
   ownershipLabel,
   safeText,
+  usageLabel,
 } from "./catalog.js";
 
 import { SelectionMenu } from "./selection-menu.js";
@@ -164,6 +165,15 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       tone: color.muted,
     },
   ];
+  content.push({
+    text: `Evidence collected: ${entry.usageMachines.filter((machine) => machine.status !== "unscanned").length}/${entry.usageMachines.length} selected machines`,
+    tone: color.muted,
+  });
+  for (const machine of entry.usageMachines)
+    content.push({
+      text: `${machine.name}: ${machine.status === "unscanned" ? "Unscanned" : machine.status === "incomplete" ? "Partial scan" : "Supported scan complete"}${machine.observedAt ? ` · ${observedLabel(machine.observedAt)}` : ""}`,
+      tone: color.muted,
+    });
   if (entry.sources.length === 1)
     content.push({ text: `Source: ${entry.sources[0]}`, tone: color.muted });
   else content.push({ text: "Sources vary by location", tone: color.warning });
@@ -188,6 +198,9 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       record.desired,
       record.conflict,
       record.metadata,
+      record.usedBy,
+      record.nameEvidence,
+      record.usageCoverage,
     ]);
     const group = groups.get(key);
     if (group) {
@@ -231,7 +244,7 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
     });
     if (record.usedBy?.length) {
       content.push({
-        text: "Observed usage on this machine (same skill name; may span locations):",
+        text: "Confirmed reads at this installation path:",
         tone: color.muted,
       });
       for (const usage of record.usedBy)
@@ -242,8 +255,18 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
     } else
       content.push({
         text: record.usageCoverage
-          ? "Used by: no evidence in scanned logs; not proof of non-use."
-          : "Used by: not collected in this snapshot. Refresh on its machine.",
+          ? "No matching installed-path evidence in this scan."
+          : "Unscanned on this machine. Collect and publish its evidence.",
+        tone: color.muted,
+      });
+    if (record.nameEvidence?.length)
+      content.push({
+        text: `Name-only invocations: ${record.nameEvidence.map((usage) => harnessLabel(usage.harness)).join(", ")}. Not attributed to this installation.`,
+        tone: color.muted,
+      });
+    if (record.usageObservedAt)
+      content.push({
+        text: `Evidence scanned ${observedLabel(record.usageObservedAt)}`,
         tone: color.muted,
       });
     if (record.usageCoverage === "incomplete")
@@ -466,7 +489,7 @@ export function SkilloomApp({
       ),
     ];
     if (
-      inventory.skillUsage &&
+      inventory.skillUsage?.version === 2 &&
       localSkills.every((skill) => !skill.installed || skill.metadata)
     ) {
       setEnriching(false);
@@ -504,6 +527,9 @@ export function SkilloomApp({
   const rows = useMemo(
     () => filterLibrary(entries, { query, machine, scope, ownership }),
     [entries, query, machine, scope, ownership],
+  );
+  const evidenceMachines = (entries[0]?.usageMachines ?? []).filter(
+    (item) => machine === "all" || item.id === machine,
   );
   const selected = rows[Math.min(index, Math.max(0, rows.length - 1))];
   useEffect(() => {
@@ -1303,8 +1329,8 @@ export function SkilloomApp({
           "Details: Esc results · ↑↓ scroll",
           "Invoke: Manual / Auto / Both / ? unknown",
           "Mixed varies; Partial has unknowns",
-          "Used by: observed read/invocation",
-          "— no evidence · OAI OpenAI · Cl Claude",
+          "Evidence: verified installed-path reads",
+          "Unscanned / Partial / No match",
           "?/Esc close help · q quit",
         ].map((x) => (
           <Line key={x}>{x}</Line>
@@ -1471,7 +1497,7 @@ export function SkilloomApp({
               <Text dimColor>Invoke</Text>
             </Box>
             <Box width={tiny ? 10 : 17}>
-              <Text dimColor>Used by</Text>
+              <Text dimColor>Evidence</Text>
             </Box>
             {!tiny && (
               <Box width={4}>
@@ -1518,9 +1544,7 @@ export function SkilloomApp({
                 </Box>
                 <Box width={tiny ? 10 : 17}>
                   <Text color={color.muted} wrap="truncate-end">
-                    {row.usedBy
-                      .map((harness) => harnessLabel(harness, tiny))
-                      .join(" ") || "—"}
+                    {usageLabel(row, tiny)}
                   </Text>
                 </Box>
                 {!tiny && (
@@ -1634,7 +1658,15 @@ export function SkilloomApp({
       <Box paddingX={1}>
         <Text
           wrap="truncate-end"
-          color={busy ? color.accent : error ? color.error : color.good}
+          color={
+            busy
+              ? color.accent
+              : error
+                ? color.error
+                : notice
+                  ? color.good
+                  : color.muted
+          }
         >
           {safeText(
             busy
@@ -1646,7 +1678,7 @@ export function SkilloomApp({
                   (view !== "Library"
                     ? " "
                     : inventory?.skillUsage
-                      ? "— no evidence · ? unknown · r refresh"
+                      ? `Evidence ${evidenceMachines.filter((machine) => machine.status !== "unscanned").length}/${evidenceMachines.length} machines collected · r refresh local`
                       : inventory?.cached
                         ? "Metadata not collected · r refresh"
                         : "Installation changes require review."),

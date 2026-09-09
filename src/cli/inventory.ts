@@ -21,10 +21,12 @@ import type {
   MachineInventory,
   UserConfig,
 } from "../core/types.js";
+import { prepareUsagePaths } from "../core/usage-paths.js";
 import type { CliRuntime } from "./runtime.js";
 
 const observedSkill = z.object({
   metadata: skillMetadataSchema.optional(),
+  usagePathIds: z.array(z.string().regex(/^[a-f0-9]{64}$/)).optional(),
   name: z.string(),
   source: z.string().nullable(),
   scope: z.enum(["global", "project"]),
@@ -209,14 +211,11 @@ export async function loadCurrentInventory(
   inventory.skillUsage = await scanSkillUsage({
     env: runtime.env,
     cachePath: join(dirname(paths.inventoryPath), "skill-usage-cache.json"),
-    knownSkills: [
-      ...new Set([
-        ...inventory.globalSkills.map((skill) => skill.name),
-        ...inventory.projects.flatMap((project) =>
-          project.skills.map((skill) => skill.name),
-        ),
-      ]),
-    ].map((name) => ({ name })),
+    knownSkills: await prepareUsagePaths(
+      inventory,
+      runtime.env,
+      runtime.signal,
+    ),
     ...(runtime.signal ? { signal: runtime.signal } : {}),
   });
   runtime.onProgress?.({ phase: "usage", completed: 1, total: 1 });

@@ -81,7 +81,7 @@ describe("full-screen skill library", () => {
       const app = mount(width, api);
       await tick();
       expect(app.lastFrame()).toContain("Invoke");
-      expect(app.lastFrame()).toContain("Used by");
+      expect(app.lastFrame()).toContain("Evidence");
       expect(app.lastFrame()).toContain("Both");
       expect(app.lastFrame()).toContain(width < 65 ? "OAI" : "OpenAI");
       expect(api.execute).not.toHaveBeenCalled();

@@ -216,6 +216,32 @@ it("preserves independent remote checkout sources and ownership through publicat
             ],
     },
   );
+  const { prepareUsagePaths } = await import("../src/core/usage-paths.js");
+  await prepareUsagePaths(observed, env);
+  const firstPathId = observed.projects[0]!.checkouts.find(
+    (checkout) => checkout.skills?.[0]?.source === "acme/first",
+  )!.skills![0]!.usagePathIds![0]!;
+  observed.skillUsage = {
+    version: 2,
+    usage: [
+      {
+        name: "review",
+        pathId: firstPathId,
+        harness: "codex",
+        evidence: "read",
+        count: 1,
+        lastUsedAt: observed.observedAt,
+      },
+    ],
+    coverage: {
+      status: "complete",
+      filesDiscovered: 1,
+      filesScanned: 1,
+      bytesRead: 100,
+      limitsHit: [],
+      observedAt: observed.observedAt,
+    },
+  };
   config.storage = {
     mode: "managed",
     repository: "https://github.com/test/config.git",
@@ -262,4 +288,11 @@ it("preserves independent remote checkout sources and ownership through publicat
     "utf8",
   );
   expect(publication).not.toContain(workspaces);
+  expect(publication).toContain(firstPathId);
+  expect(
+    records.find((record) => record.source === "acme/first")?.usedBy,
+  ).toEqual(observed.skillUsage.usage);
+  expect(
+    records.find((record) => record.source === "acme/second")?.usedBy,
+  ).toEqual([]);
 });

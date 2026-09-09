@@ -20,6 +20,7 @@ function comparable(inventory: MachineInventory): string {
     ...(inventory.skillUsage
       ? {
           skillUsage: {
+            version: inventory.skillUsage.version,
             usage: inventory.skillUsage.usage,
             coverage: inventory.skillUsage.coverage.status,
           },
@@ -40,6 +41,7 @@ function comparablePublished(content: string): string {
       ...(parsed.skillUsage
         ? {
             skillUsage: {
+              version: parsed.skillUsage.version,
               usage: parsed.skillUsage.usage,
               coverage: parsed.skillUsage.coverage.status,
             },

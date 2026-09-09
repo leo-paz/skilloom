@@ -4,6 +4,7 @@ import {
 } from "./skill-metadata.js";
 import { scanSkillUsage } from "./skill-usage.js";
 import type { InventorySkill, MachineInventory } from "./types.js";
+import { prepareUsagePaths } from "./usage-paths.js";
 
 /** Hydrate declarations and observed usage without rediscovering or reconciling installations. */
 export async function enrichInventoryMetadata(
@@ -76,17 +77,7 @@ export async function enrichInventoryMetadata(
   enriched.skillUsage = await scanSkillUsage({
     env,
     cachePath,
-    knownSkills: [
-      ...new Set([
-        ...enriched.globalSkills.map((skill) => skill.name),
-        ...enriched.projects.flatMap((project) =>
-          [
-            ...project.skills,
-            ...project.checkouts.flatMap((checkout) => checkout.skills ?? []),
-          ].map((skill) => skill.name),
-        ),
-      ]),
-    ].map((name) => ({ name })),
+    knownSkills: await prepareUsagePaths(enriched, env, signal),
     ...(signal ? { signal } : {}),
   });
   signal?.throwIfAborted();

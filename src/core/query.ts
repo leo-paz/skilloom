@@ -11,13 +11,16 @@ export interface InventoryQuery {
 export interface InventoryOccurrence extends InventorySkill {
   usedBy?:
     | Array<{
+        pathId?: string | undefined;
         harness: string;
         evidence: string;
         count: number;
         lastUsedAt: string;
       }>
     | undefined;
+  nameEvidence?: InventoryOccurrence["usedBy"];
   usageCoverage?: string | undefined;
+  usageObservedAt?: string | undefined;
   machine: { id: string; name: string };
   observedAt: string;
   stale: boolean;
@@ -94,11 +97,16 @@ export function queryInventory(
     string,
     {
       coverage: string;
+      observedAt: string;
       skills: Map<string, NonNullable<InventoryOccurrence["usedBy"]>>;
     }
   >();
   for (const snapshot of [inventory, ...(inventory.remoteObservations ?? [])]) {
-    if (!snapshot.skillUsage) continue;
+    if (
+      snapshot.skillUsage?.version !== 2 ||
+      usageByMachine.has(snapshot.machine.id)
+    )
+      continue;
     const skills = new Map<
       string,
       NonNullable<InventoryOccurrence["usedBy"]>
@@ -110,13 +118,19 @@ export function queryInventory(
     }
     usageByMachine.set(snapshot.machine.id, {
       coverage: snapshot.skillUsage.coverage.status,
+      observedAt: snapshot.skillUsage.coverage.observedAt,
       skills,
     });
   }
   for (const record of records) {
     const usage = usageByMachine.get(record.machine.id);
     if (usage) {
-      record.usedBy = usage.skills.get(record.name) ?? [];
+      const evidence = usage.skills.get(record.name) ?? [];
+      record.usedBy = evidence.filter(
+        (item) => item.pathId && record.usagePathIds?.includes(item.pathId),
+      );
+      record.nameEvidence = evidence.filter((item) => !item.pathId);
+      record.usageObservedAt = usage.observedAt;
       record.usageCoverage = usage.coverage;
     }
   }

@@ -233,7 +233,7 @@ def fixture(home):
                      metadata=dict(source="skill-declaration", invocation="unknown", variants=[]))
         value.update(extra)
         return value
-    skills = [skill("alpha-review", managed=True, desired=True, metadata=dict(source="skill-declaration", invocation="both", variants=[dict(agent="codex", invocation="both", status="read")])), skill("bravo-writing"), skill("charlie-testing", source=None)]
+    skills = [skill("alpha-review", usagePathIds=["a" * 64], managed=True, desired=True, metadata=dict(source="skill-declaration", invocation="both", variants=[dict(agent="codex", invocation="both", status="read")])), skill("bravo-writing"), skill("charlie-testing", source=None)]
     skills += [skill(f"skill-{i:02}") for i in range(30)]
     tracked = skill("delta-project", scope="project", ownership="repository", source="acme/project")
     project = dict(id="github.com/acme/project", name="project", remote="https://github.com/acme/project",
@@ -244,7 +244,7 @@ def fixture(home):
                      profiles=["personal"], machines=[dict(id="11111111-1111-4111-8111-111111111111", name="PTY Mac", profile="personal", local=True),
                          dict(id="pty-remote", name="PTY Studio", profile="personal", local=False, observedAt="2026-01-01T00:00:00Z", projects=0, globalSkills=1, changes=0)],
                      globalSkills=skills, projects=[project],
-                     skillUsage=dict(usage=[dict(name="alpha-review", harness="codex", evidence="read", count=2, lastUsedAt="2026-01-01T00:00:00Z")],
+                     skillUsage=dict(version=2, usage=[dict(name="alpha-review", pathId="a" * 64, harness="codex", evidence="read", count=2, lastUsedAt="2026-01-01T00:00:00Z")],
                          coverage=dict(status="incomplete", filesDiscovered=1, filesScanned=1, bytesRead=100, limitsHit=["files"], observedAt="2026-01-01T00:00:00Z")),
                      remoteObservations=[dict(machine=dict(id="pty-remote", name="PTY Studio"), observedAt="2026-01-01T00:00:00Z", stale=True,
                          globalSkills=[skill("remote-only")], projects=[])],
@@ -258,7 +258,7 @@ def exercise(executable, home, width, height):
     try:
         terminal.wait("initial populated library", lambda text: "alpha-review" in text and "bravo-writing" in text)
         assert terminal.screen.alternate, "Dashboard did not enter alternate screen"
-        assert "Invoke" in terminal.screen.text() and "Used by" in terminal.screen.text(), "Metadata column headers missing"
+        assert "Invoke" in terminal.screen.text() and "Evidence" in terminal.screen.text(), "Metadata column headers missing"
         assert "Both" in terminal.screen.text() and ("OAI" if width < 65 else "OpenAI") in terminal.screen.text(), "Declared mode or observed harness missing"
         terminal.wait("raw input enabled", lambda _: not (termios.tcgetattr(terminal.slave)[3] & termios.ICANON))
         terminal.send(b"\x1b[C", "right selects local machine", lambda text: "‹ PTY Mac ›" in text)

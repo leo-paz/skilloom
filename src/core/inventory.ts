@@ -185,6 +185,7 @@ function inventorySkills(
       !skill.repositoryOwned &&
       managed.has(managedStateKey(skill, projectRoot));
     if (existing) {
+      if (skill.path) existing.path = skill.path;
       if (skill.metadata) existing.metadata = skill.metadata;
       existing.installed = !skill.missing;
       existing.managed = isManaged;
@@ -221,6 +222,7 @@ function inventorySkills(
         ...(skill.detectedAgents
           ? { detectedAgents: [...skill.detectedAgents] }
           : {}),
+        ...(skill.path ? { path: skill.path } : {}),
         ...(skill.metadata ? { metadata: skill.metadata } : {}),
         installed: !skill.missing,
         desired: false,

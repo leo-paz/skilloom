@@ -22,6 +22,7 @@ export const inventoryFixture = (): MachineInventory => ({
   globalSkills: [
     {
       name: "code-review",
+      usagePathIds: ["a".repeat(64)],
       metadata: {
         source: "skill-declaration",
         invocation: "both",
@@ -66,9 +67,11 @@ export const inventoryFixture = (): MachineInventory => ({
   ],
   operations: [],
   skillUsage: {
+    version: 2,
     usage: [
       {
         name: "code-review",
+        pathId: "a".repeat(64),
         harness: "codex",
         evidence: "read",
         count: 2,

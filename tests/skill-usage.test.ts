@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import {
   appendFile,
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -125,6 +127,11 @@ it("recognizes Pi reads and conservative Codex commands, never mentioned or mere
   const home = await mkdtemp(join(tmpdir(), "skilloom-usage-"));
   const at = "2026-09-09T01:00:00Z";
   const target = join(home, ".agents/skills/review/SKILL.md");
+  await mkdir(join(home, ".agents/skills/review"), { recursive: true });
+  await writeFile(target, "skill");
+  const pathId = createHash("sha256")
+    .update(await realpath(target))
+    .digest("hex");
   const pi = join(home, ".pi/agent/sessions/project");
   const codex = join(home, ".codex/sessions/2026/09/09");
   await mkdir(pi, { recursive: true });
@@ -188,6 +195,8 @@ it("recognizes Pi reads and conservative Codex commands, never mentioned or mere
     join(codex, "one.jsonl"),
     [
       ...command("read", `cat '${target}'`),
+      ...command("concatenation", `cat '${target}'.backup`),
+      ...command("escaped-space", `cat other\\ '${target}'`),
       ...command("listing", `ls '${target}'`),
       ...command("mention", `echo "cat '${target}'"`),
     ]
@@ -205,6 +214,7 @@ it("recognizes Pi reads and conservative Codex commands, never mentioned or mere
         name: "review",
         harness: "pi",
         evidence: "read",
+        pathId,
         count: 1,
         lastUsedAt: at,
       },
@@ -212,6 +222,7 @@ it("recognizes Pi reads and conservative Codex commands, never mentioned or mere
         name: "review",
         harness: "codex",
         evidence: "read",
+        pathId,
         count: 1,
         lastUsedAt: at,
       },
@@ -306,6 +317,11 @@ it("matches successful literal Codex exec wrappers and excludes arbitrary JavaSc
   const root = join(home, ".codex/sessions/2026/09/09");
   await mkdir(root, { recursive: true });
   const target = join(home, ".agents/skills/review/SKILL.md");
+  await mkdir(join(home, ".agents/skills/review"), { recursive: true });
+  await writeFile(target, "skill");
+  const pathId = createHash("sha256")
+    .update(await realpath(target))
+    .digest("hex");
   const input = `text(await tools.exec_command({cmd: ${JSON.stringify(`cat '${target}'`)}, workdir: ${JSON.stringify(home)}, max_output_tokens: 1000}));`;
   const records = (id: string, source: string, code: number) => [
     {
@@ -349,15 +365,108 @@ it("matches successful literal Codex exec wrappers and excludes arbitrary JavaSc
   const result = await scanSkillUsage({
     env: { HOME: home },
     cachePath: join(home, "cache.json"),
-    knownSkills: [{ name: "review" }],
+    knownSkills: [{ name: "review", paths: [target] }],
   });
   expect(result.usage).toEqual([
     {
       name: "review",
       harness: "codex",
       evidence: "read",
+      pathId,
       count: 1,
       lastUsedAt: "2026-09-09T01:00:00Z",
     },
   ]);
+});
+
+it("requires installed path identity, resolves known aliases, and preserves distinct sessions across copies", async () => {
+  const { symlink } = await import("node:fs/promises");
+  const home = await mkdtemp(join(tmpdir(), "skilloom-identity-"));
+  const root = join(home, ".pi/agent/sessions");
+  const installed = join(home, "installed/review");
+  const unrelated = join(home, "elsewhere/review");
+  await Promise.all(
+    [root, installed, unrelated].map((path) =>
+      mkdir(path, { recursive: true }),
+    ),
+  );
+  await writeFile(join(installed, "SKILL.md"), "installed");
+  await writeFile(join(unrelated, "SKILL.md"), "unrelated");
+  const alias = join(home, "alias");
+  await symlink(installed, alias);
+  const records = (session: string, path: string) =>
+    [
+      { type: "session", id: session, cwd: home },
+      {
+        type: "message",
+        timestamp: "2026-09-09T01:00:00Z",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "same-call-id",
+              name: "read",
+              arguments: { path },
+            },
+          ],
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "same-call-id",
+          isError: false,
+        },
+      },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join("\n") + "\n";
+  await writeFile(
+    join(root, "one.jsonl"),
+    records("one", join(alias, "SKILL.md")),
+  );
+  await writeFile(
+    join(root, "copy.jsonl"),
+    records("one", join(alias, "SKILL.md")),
+  );
+  await writeFile(
+    join(root, "two.jsonl"),
+    records("two", await realpath(join(installed, "SKILL.md"))),
+  );
+  await writeFile(
+    join(root, "unrelated.jsonl"),
+    records("unrelated", join(unrelated, "SKILL.md")),
+  );
+  const base = { env: { HOME: home }, cachePath: join(home, "cache.json") };
+  expect(
+    (await scanSkillUsage({ ...base, knownSkills: [{ name: "review" }] }))
+      .usage,
+  ).toEqual([]);
+  const result = await scanSkillUsage({
+    ...base,
+    knownSkills: [{ name: "review", paths: [alias] }],
+  });
+  expect(result.version).toBe(2);
+  expect(result.usage).toEqual([
+    {
+      name: "review",
+      harness: "pi",
+      evidence: "read",
+      pathId: createHash("sha256")
+        .update(await realpath(join(installed, "SKILL.md")))
+        .digest("hex"),
+      count: 2,
+      lastUsedAt: "2026-09-09T01:00:00Z",
+    },
+  ]);
+  expect(
+    (
+      await scanSkillUsage({
+        ...base,
+        knownSkills: [{ name: "review", paths: [alias] }],
+      })
+    ).usage,
+  ).toEqual(result.usage);
 });

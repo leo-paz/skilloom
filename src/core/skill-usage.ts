@@ -4,6 +4,7 @@ import {
   mkdir,
   open,
   opendir,
+  realpath,
   rename,
   stat,
   writeFile,
@@ -18,8 +19,10 @@ export interface SkillUsage {
   evidence: "invoke" | "read";
   count: number;
   lastUsedAt: string;
+  pathId?: string | undefined;
 }
 export interface SkillUsageScan {
+  version: 2;
   usage: SkillUsage[];
   coverage: {
     status: "complete" | "incomplete";
@@ -31,6 +34,7 @@ export interface SkillUsageScan {
   };
 }
 export const skillUsageScanSchema = z.object({
+  version: z.literal(2),
   usage: z.array(
     z.object({
       name: z.string(),
@@ -38,6 +42,10 @@ export const skillUsageScanSchema = z.object({
       evidence: z.enum(["invoke", "read"]),
       count: z.number().int().nonnegative(),
       lastUsedAt: z.string(),
+      pathId: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional(),
     }),
   ),
   coverage: z.object({
@@ -60,6 +68,7 @@ interface Cursor {
   offset: number;
   mtimeMs: number;
   cwd: string;
+  sessionId: string;
   pending: Pending[];
   omittedHistory: boolean;
 }
@@ -69,9 +78,10 @@ interface Event {
   harness: SkillHarness;
   evidence: "invoke" | "read";
   at: string;
+  pathId?: string | undefined;
 }
 interface Cache {
-  version: 1;
+  version: 2;
   files: Record<string, Cursor>;
   events: Event[];
   omittedEvents: boolean;
@@ -149,25 +159,41 @@ export async function scanSkillUsage(options: {
   };
   const names = new Set(options.knownSkills.map((skill) => skill.name));
   const pathNames = new Map<string, string>();
-  for (const skill of options.knownSkills)
-    for (const path of skill.paths ?? [])
-      pathNames.set(
-        resolve(path.endsWith("SKILL.md") ? path : join(path, "SKILL.md")),
-        skill.name,
+  for (const skill of options.knownSkills) {
+    for (const path of skill.paths ?? []) {
+      if (stopped()) break;
+      const lexical = resolve(
+        path.endsWith("SKILL.md") ? path : join(path, "SKILL.md"),
       );
+      try {
+        const canonical = await realpath(lexical);
+        const matched = `${skill.name}\0${digest(canonical)}`;
+        pathNames.set(lexical, matched);
+        pathNames.set(canonical, matched);
+      } catch {
+        // A missing installation cannot establish identity for a historical read.
+      }
+    }
+  }
   const matchName = (name: string): string[] => (names.has(name) ? [name] : []);
   const matchPath = (value: unknown, cwd: string): string[] => {
     const path = text(value);
     if (!path || basename(path) !== "SKILL.md" || (!isAbsolute(path) && !cwd))
       return [];
-    const normalized = resolve(cwd || "/", path);
-    const known = pathNames.get(normalized);
-    if (known) return [known];
-    return matchName(basename(dirname(normalized)));
+    const known = pathNames.get(resolve(cwd || "/", path));
+    return known ? [known] : [];
   };
   // Deliberately excludes shell expressions, pipelines, globs and command substitutions.
   const commandReads = (cmd: string, cwd: string): string[] => {
     if (!/^\s*cat\s+/.test(cmd) || /[\n\r;|&$`<>*?]/.test(cmd)) return [];
+    // Shell word concatenation and escapes can make a quoted path only a fragment.
+    // Require whitespace-separated literal arguments before attributing a read.
+    if (
+      !/^cat\s+(?:'[^']*'|"[^"\\]*"|[^\s'"\\]+)(?:\s+(?:'[^']*'|"[^"\\]*"|[^\s'"\\]+))*$/.test(
+        cmd.trim(),
+      )
+    )
+      return [];
     const tokens =
       cmd.trim().match(/'(?:[^']*)'|"(?:[^"\\]*)"|[^\s'"]+/g) ?? [];
     if (tokens.shift() !== "cat" || !tokens.length) return [];
@@ -182,16 +208,19 @@ export async function scanSkillUsage(options: {
   };
   const knownFingerprint = digest(
     JSON.stringify(
-      options.knownSkills
-        .map((skill) => ({
-          name: skill.name,
-          paths: [...(skill.paths ?? [])].sort(),
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    ),
+      [...pathNames.entries()].sort(([a], [b]) => a.localeCompare(b)),
+    ) +
+      JSON.stringify(
+        options.knownSkills
+          .map((skill) => ({
+            name: skill.name,
+            paths: [...(skill.paths ?? [])].sort(),
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      ),
   );
   let cache: Cache = {
-    version: 1,
+    version: 2,
     files: {},
     events: [],
     omittedEvents: false,
@@ -213,7 +242,7 @@ export async function scanSkillUsage(options: {
     } finally {
       await handle.close();
     }
-    if (stored.version !== 1) throw new Error("cache version");
+    if (stored.version !== 2) throw new Error("cache version");
     cache.omittedEvents = stored.omittedEvents === true;
     cache.knownFingerprint = text(stored.knownFingerprint);
     const previousCoverage = skillUsageScanSchema.shape.coverage.safeParse(
@@ -236,6 +265,7 @@ export async function scanSkillUsage(options: {
         identity: cursor.identity,
         offset: Number(cursor.offset),
         mtimeMs: Number(cursor.mtimeMs) || 0,
+        sessionId: text(cursor.sessionId).slice(0, 256),
         cwd: isAbsolute(text(cursor.cwd)) ? text(cursor.cwd) : "",
         omittedHistory: cursor.omittedHistory === true,
         pending: array(cursor.pending)
@@ -243,7 +273,11 @@ export async function scanSkillUsage(options: {
           .flatMap((value) => {
             const pending = object(value);
             const skillNames = array(pending.names).flatMap((name) =>
-              matchName(text(name)),
+              names.has(text(name).split("\0")[0]!) &&
+              (!text(name).includes("\0") ||
+                [...pathNames.values()].includes(text(name)))
+                ? [text(name)]
+                : [],
             );
             return text(pending.id).length <= 256 &&
               skillNames.length &&
@@ -267,6 +301,10 @@ export async function scanSkillUsage(options: {
         const event = object(value);
         return /^[a-f0-9]{64}$/.test(text(event.id)) &&
           names.has(text(event.name)) &&
+          (event.evidence !== "read" ||
+            [...pathNames.values()].includes(
+              `${text(event.name)}\0${text(event.pathId)}`,
+            )) &&
           ["codex", "claude", "pi"].includes(text(event.harness)) &&
           ["invoke", "read"].includes(text(event.evidence)) &&
           Number.isFinite(Date.parse(text(event.at)))
@@ -277,6 +315,7 @@ export async function scanSkillUsage(options: {
                 harness: event.harness as SkillHarness,
                 evidence: event.evidence as Event["evidence"],
                 at: text(event.at),
+                ...(event.pathId ? { pathId: text(event.pathId) } : {}),
               },
             ]
           : [];
@@ -398,14 +437,21 @@ export async function scanSkillUsage(options: {
     if (index < 0) return;
     const pending = cursor.pending.splice(index, 1)[0]!;
     if (!ok) return;
-    for (const name of pending.names) {
-      const key = digest(`${harness}:${id}:${name}:${pending.evidence}`);
+    for (const matched of pending.names) {
+      const [name, pathId] = matched.split("\0") as [
+        string,
+        string | undefined,
+      ];
+      const key = digest(
+        `${harness}:${cursor.sessionId}:${id}:${name}:${pathId ?? ""}:${pending.evidence}:${pending.at}`,
+      );
       events.set(key, {
         id: key,
         name,
         harness,
         evidence: pending.evidence,
         at: pending.at,
+        ...(pathId ? { pathId } : {}),
       });
     }
   };
@@ -416,6 +462,14 @@ export async function scanSkillUsage(options: {
   ) => {
     const payload = object(record.payload),
       message = object(record.message);
+    const sessionId =
+      text(record.sessionId) ||
+      (record.type === "session_meta"
+        ? text(payload.id || payload.session_id)
+        : record.type === "session"
+          ? text(record.id)
+          : "");
+    if (sessionId && sessionId.length <= 256) cursor.sessionId = sessionId;
     const contextPath =
       text(record.cwd) ||
       (["session_meta", "turn_context"].includes(text(record.type))
@@ -437,7 +491,10 @@ export async function scanSkillUsage(options: {
       } else if (["read", "Read", "read_file"].includes(text(name)))
         matched = matchPath(args.path ?? args.file_path, cursor.cwd);
       else if (["exec_command", "Bash", "bash"].includes(text(name)))
-        matched = commandReads(text(args.cmd ?? args.command), cursor.cwd);
+        matched = commandReads(
+          text(args.cmd ?? args.command),
+          text(args.workdir) || cursor.cwd,
+        );
       else if (
         harness === "codex" &&
         name === "exec" &&
@@ -553,6 +610,7 @@ export async function scanSkillUsage(options: {
         offset: 0,
         mtimeMs: 0,
         cwd: "",
+        sessionId: "",
         pending: [],
         omittedHistory: false,
       };
@@ -577,6 +635,24 @@ export async function scanSkillUsage(options: {
         if (!(await handle.stat()).isFile()) {
           limits.add("non_regular_file");
           continue;
+        }
+        if (
+          offset > 0 &&
+          !cursor.sessionId &&
+          coverage.bytesRead < LIMITS.bytes
+        ) {
+          // Session headers restore identity/cwd when the bounded window starts mid-file.
+          const header = Buffer.alloc(
+            Math.min(32768, LIMITS.bytes - coverage.bytesRead),
+          );
+          const head = await handle.read(header, 0, header.length, 0);
+          coverage.bytesRead += head.bytesRead;
+          const end = header.indexOf(10);
+          if (end >= 0 && end < head.bytesRead) {
+            const record = decode(header.subarray(0, end).toString("utf8"));
+            if (["session", "session_meta"].includes(text(record.type)))
+              processRecord(record, cursor, file.harness);
+          }
         }
         const buffer = Buffer.alloc(
           Math.min(
@@ -646,7 +722,7 @@ export async function scanSkillUsage(options: {
     limits.add("history_window");
   const usage = new Map<string, SkillUsage>();
   for (const event of cache.events) {
-    const key = `${event.name}:${event.harness}:${event.evidence}`;
+    const key = `${event.name}:${event.harness}:${event.evidence}:${event.pathId ?? ""}`;
     const current = usage.get(key);
     if (current) {
       current.count += 1;
@@ -659,6 +735,7 @@ export async function scanSkillUsage(options: {
         evidence: event.evidence,
         count: 1,
         lastUsedAt: event.at,
+        ...(event.pathId ? { pathId: event.pathId } : {}),
       });
   }
   coverage.limitsHit = [...limits].sort();
@@ -684,6 +761,7 @@ export async function scanSkillUsage(options: {
   coverage.limitsHit = [...limits].sort();
   coverage.status = limits.size ? "incomplete" : "complete";
   return {
+    version: 2,
     usage: [...usage.values()].sort(
       (a, b) =>
         a.name.localeCompare(b.name) ||
