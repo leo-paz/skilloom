@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
+  lstat,
   mkdir,
   open,
   opendir,
+  readFile,
   realpath,
   rename,
   stat,
@@ -11,12 +13,27 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
+import { extractCodexSkillEvents } from "./codex-skill-events.js";
+import {
+  type BackfillState,
+  discoverBackfill,
+  newBackfillState,
+} from "./usage-backfill.js";
+import {
+  appendUsageEvents,
+  atomicUsageJson,
+  readUsageJournal,
+  saveUsageManifest,
+  usageDirectory,
+  usageEventId,
+  withUsageLock,
+} from "./usage-journal.js";
 
 export type SkillHarness = "codex" | "claude" | "pi";
 export interface SkillUsage {
   name: string;
   harness: SkillHarness;
-  evidence: "invoke" | "read";
+  evidence: "invoke" | "read" | "load";
   count: number;
   lastUsedAt: string;
   pathId?: string | undefined;
@@ -25,17 +42,30 @@ export interface SkillUsageEvent {
   id: string;
   name: string;
   harness: SkillHarness;
-  evidence: "invoke" | "read";
+  evidence: "invoke" | "read" | "load";
   at: string;
   pathId?: string | undefined;
   /** Opaque session identity, never transcript text or a local path. */
   sessionId?: string | undefined;
+}
+export interface HarnessUsageCoverage {
+  harness: SkillHarness;
+  status: "unscanned" | "partial" | "scanned" | "absent";
+  filesScanned: number;
+  pendingCalls: number;
+  oldestAt?: string | undefined;
+  newestAt?: string | undefined;
+  limitations: string[];
 }
 export interface SkillUsageScan {
   version: 2;
   usage: SkillUsage[];
   history?: SkillUsageEvent[] | undefined;
   historyTruncated?: boolean | undefined;
+  harnessCoverage?: HarnessUsageCoverage[] | undefined;
+  backfill?:
+    | { complete: boolean; filesDiscovered: number; filesPending: number }
+    | undefined;
   coverage: {
     status: "complete" | "incomplete";
     filesDiscovered: number;
@@ -51,7 +81,7 @@ export const skillUsageScanSchema = z.object({
     z.object({
       name: z.string(),
       harness: z.enum(["codex", "claude", "pi"]),
-      evidence: z.enum(["invoke", "read"]),
+      evidence: z.enum(["invoke", "read", "load"]),
       count: z.number().int().nonnegative(),
       lastUsedAt: z.string(),
       pathId: z
@@ -66,7 +96,7 @@ export const skillUsageScanSchema = z.object({
         id: z.string().regex(/^[a-f0-9]{64}$/),
         name: z.string().max(256),
         harness: z.enum(["codex", "claude", "pi"]),
-        evidence: z.enum(["invoke", "read"]),
+        evidence: z.enum(["invoke", "read", "load"]),
         at: z.string().datetime({ offset: true }),
         pathId: z
           .string()
@@ -81,6 +111,26 @@ export const skillUsageScanSchema = z.object({
     .max(1000)
     .optional(),
   historyTruncated: z.boolean().optional(),
+  harnessCoverage: z
+    .array(
+      z.object({
+        harness: z.enum(["codex", "claude", "pi"]),
+        status: z.enum(["unscanned", "partial", "scanned", "absent"]),
+        filesScanned: z.number().int().nonnegative(),
+        pendingCalls: z.number().int().nonnegative(),
+        oldestAt: z.string().optional(),
+        newestAt: z.string().optional(),
+        limitations: z.array(z.string()),
+      }),
+    )
+    .optional(),
+  backfill: z
+    .object({
+      complete: z.boolean(),
+      filesDiscovered: z.number().int().nonnegative(),
+      filesPending: z.number().int().nonnegative(),
+    })
+    .optional(),
   coverage: z.object({
     status: z.enum(["complete", "incomplete"]),
     filesDiscovered: z.number().int().nonnegative(),
@@ -93,7 +143,7 @@ export const skillUsageScanSchema = z.object({
 interface Pending {
   id: string;
   names: string[];
-  evidence: "invoke" | "read";
+  evidence: "invoke" | "read" | "load";
   at: string;
 }
 interface Cursor {
@@ -105,9 +155,16 @@ interface Cursor {
   inheritedBefore?: string | undefined;
   pending: Pending[];
   omittedHistory: boolean;
+  harness?: SkillHarness | undefined;
+  skippingLine?: boolean;
+  awaitingAppend?: boolean;
+  oldestAt?: string;
+  newestAt?: string;
+  errors?: string[];
 }
 interface Cache {
-  version: 3;
+  version: 4;
+  backfill?: BackfillState;
   files: Record<string, Cursor>;
   events: SkillUsageEvent[];
   omittedEvents: boolean;
@@ -176,7 +233,43 @@ export async function scanSkillUsage(options: {
   cachePath: string;
   knownSkills: Array<{ name: string; paths?: string[] | undefined }>;
   signal?: AbortSignal | undefined;
+  mode?: "tail" | "backfill";
+  restartBackfill?: boolean;
 }): Promise<SkillUsageScan> {
+  if (options.signal?.aborted)
+    return {
+      version: 2,
+      usage: [],
+      history: [],
+      coverage: {
+        status: "incomplete",
+        filesDiscovered: 0,
+        filesScanned: 0,
+        bytesRead: 0,
+        limitsHit: ["aborted"],
+        observedAt: new Date().toISOString(),
+      },
+    };
+  const directory = usageDirectory(options.cachePath);
+  return withUsageLock(
+    join(directory, "collector.lock"),
+    () => scanLocked(options),
+    options.signal,
+  );
+}
+async function scanLocked(options: {
+  env: NodeJS.ProcessEnv;
+  cachePath: string;
+  knownSkills: Array<{ name: string; paths?: string[] | undefined }>;
+  signal?: AbortSignal | undefined;
+  mode?: "tail" | "backfill";
+  restartBackfill?: boolean;
+}): Promise<SkillUsageScan> {
+  const backfill = options.mode === "backfill";
+  const cachePath = backfill
+    ? `${options.cachePath}.backfill`
+    : options.cachePath;
+  const directory = usageDirectory(options.cachePath);
   const started = Date.now();
   const limits = new Set<string>();
   const coverage: SkillUsageScan["coverage"] = {
@@ -261,29 +354,64 @@ export async function scanSkillUsage(options: {
       ),
   );
   let cache: Cache = {
-    version: 3,
+    version: 4,
     files: {},
     events: [],
     omittedEvents: false,
   };
   try {
     const handle = await open(
-      options.cachePath,
+      cachePath,
       constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
     );
     let stored: Record<string, unknown>;
     try {
       const info = await handle.stat();
-      if (!info.isFile() || info.size > 4 * 1024 * 1024)
+      if (!info.isFile() || info.size > 64 * 1024 * 1024)
         throw new Error("invalid cache file");
-      const buffer = Buffer.alloc(4 * 1024 * 1024 + 1);
+      const buffer = Buffer.alloc(
+        Math.min(info.size + 1, 64 * 1024 * 1024 + 1),
+      );
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      if (bytesRead > 4 * 1024 * 1024) throw new Error("oversized cache");
+      if (bytesRead > 64 * 1024 * 1024) throw new Error("oversized cache");
       stored = decode(buffer.subarray(0, bytesRead).toString("utf8"));
     } finally {
       await handle.close();
     }
-    if (stored.version !== 3) throw new Error("cache version");
+    if (stored.version !== 4) throw new Error("cache version");
+    if (backfill && stored.backfill) {
+      const parsed = z
+        .object({
+          queue: z
+            .array(
+              z.object({
+                path: z.string().refine(isAbsolute),
+                harness: z.enum(["codex", "claude", "pi"]),
+                skip: z.number().int().nonnegative(),
+                identity: z.string().optional(),
+                modified: z.number().optional(),
+              }),
+            )
+            .max(100000),
+          pending: z
+            .array(
+              z.object({
+                path: z.string().refine(isAbsolute),
+                harness: z.enum(["codex", "claude", "pi"]),
+                modified: z.number(),
+                size: z.number().int().nonnegative(),
+                identity: z.string(),
+              }),
+            )
+            .max(48),
+          completed: z.boolean(),
+          filesDiscovered: z.number().int().nonnegative(),
+          skipped: z.array(z.string()).max(100),
+        })
+        .safeParse(stored.backfill);
+      if (parsed.success) cache.backfill = parsed.data;
+      else limits.add("cache_unavailable");
+    }
     cache.omittedEvents = stored.omittedEvents === true;
     cache.knownFingerprint = text(stored.knownFingerprint);
     const previousCoverage = skillUsageScanSchema.shape.coverage.safeParse(
@@ -292,7 +420,7 @@ export async function scanSkillUsage(options: {
     if (previousCoverage.success) cache.lastCoverage = previousCoverage.data;
     for (const [key, value] of Object.entries(object(stored.files)).slice(
       0,
-      LIMITS.candidates,
+      backfill ? 100000 : LIMITS.candidates,
     )) {
       const cursor = object(value);
       if (
@@ -312,6 +440,14 @@ export async function scanSkillUsage(options: {
         )
           ? text(cursor.inheritedBefore)
           : undefined,
+        harness: ["codex", "claude", "pi"].includes(text(cursor.harness))
+          ? (cursor.harness as SkillHarness)
+          : undefined,
+        skippingLine: cursor.skippingLine === true,
+        awaitingAppend: cursor.awaitingAppend === true,
+        ...(text(cursor.oldestAt) ? { oldestAt: text(cursor.oldestAt) } : {}),
+        ...(text(cursor.newestAt) ? { newestAt: text(cursor.newestAt) } : {}),
+        errors: array(cursor.errors).map(text),
         cwd: isAbsolute(text(cursor.cwd)) ? text(cursor.cwd) : "",
         omittedHistory: cursor.omittedHistory === true,
         pending: array(cursor.pending)
@@ -327,7 +463,7 @@ export async function scanSkillUsage(options: {
             );
             return text(pending.id).length <= 256 &&
               skillNames.length &&
-              ["invoke", "read"].includes(text(pending.evidence)) &&
+              ["invoke", "read", "load"].includes(text(pending.evidence)) &&
               Number.isFinite(Date.parse(text(pending.at)))
               ? [
                   {
@@ -352,7 +488,7 @@ export async function scanSkillUsage(options: {
               `${text(event.name)}\0${text(event.pathId)}`,
             )) &&
           ["codex", "claude", "pi"].includes(text(event.harness)) &&
-          ["invoke", "read"].includes(text(event.evidence)) &&
+          ["invoke", "read", "load"].includes(text(event.evidence)) &&
           Number.isFinite(Date.parse(text(event.at)))
           ? [
               {
@@ -373,9 +509,27 @@ export async function scanSkillUsage(options: {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT")
       limits.add("cache_unavailable");
   }
-  if (cache.knownFingerprint !== knownFingerprint) cache.files = {};
+  if (cache.knownFingerprint !== knownFingerprint) {
+    cache.files = {};
+    delete cache.backfill;
+  }
   cache.knownFingerprint = knownFingerprint;
   const events = new Map(cache.events.map((event) => [event.id, event]));
+  const journal = await readUsageJournal(directory);
+  for (const event of journal.events)
+    if (
+      names.has(event.name) &&
+      (!event.pathId ||
+        [...pathNames.values()].includes(`${event.name}\0${event.pathId}`))
+    ) {
+      const prior = events.get(event.id);
+      if (!prior || Date.parse(event.at) < Date.parse(prior.at))
+        events.set(event.id, event);
+    }
+  if (journal.truncated) limits.add("journal_window");
+  const journalTimes = new Map(
+    journal.events.map((event) => [event.id, event.at]),
+  );
   const home = options.env.HOME || options.env.USERPROFILE;
   const roots: Array<{ path: string; harness: SkillHarness }> = home
     ? [
@@ -481,8 +635,36 @@ export async function scanSkillUsage(options: {
       } else limits.add("files");
     }
   };
-  await Promise.all(roots.map((root) => discover(root.path, root.harness, 0)));
-  coverage.filesDiscovered = candidates.length;
+  if (backfill) {
+    if (options.restartBackfill) cache.backfill = newBackfillState(roots);
+    cache.backfill ??= newBackfillState(roots);
+    const pending: Candidate[] = [];
+    for (const file of cache.backfill.pending) {
+      try {
+        const info = await lstat(file.path);
+        if (info.isFile())
+          pending.push({
+            ...file,
+            size: info.size,
+            modified: info.mtimeMs,
+            identity: `${info.dev}:${info.ino}`,
+          });
+        else cache.backfill.skipped.push("non_regular_file");
+      } catch {
+        cache.backfill.skipped.push("missing_or_unreadable");
+      }
+    }
+    cache.backfill.pending = pending;
+    await discoverBackfill(cache.backfill, stopped);
+    candidates.push(...cache.backfill.pending);
+    coverage.filesDiscovered = cache.backfill.filesDiscovered;
+    for (const reason of cache.backfill.skipped) limits.add(reason);
+  } else {
+    await Promise.all(
+      roots.map((root) => discover(root.path, root.harness, 0)),
+    );
+    coverage.filesDiscovered = candidates.length;
+  }
   const complete = (
     cursor: Cursor,
     harness: SkillHarness,
@@ -498,8 +680,13 @@ export async function scanSkillUsage(options: {
         string,
         string | undefined,
       ];
-      const key = digest(
-        `${harness}:${cursor.sessionId}:${id}:${name}:${pathId ?? ""}:${pending.evidence}:${pending.at}`,
+      const key = usageEventId(
+        harness,
+        pending.evidence === "load" ? "" : cursor.sessionId,
+        id,
+        name,
+        pathId,
+        pending.evidence,
       );
       events.set(key, {
         id: key,
@@ -558,6 +745,24 @@ export async function scanSkillUsage(options: {
       (typeof message.timestamp === "number"
         ? new Date(message.timestamp).toISOString()
         : text(message.timestamp));
+    if (Number.isFinite(Date.parse(at))) {
+      if (!cursor.oldestAt || Date.parse(at) < Date.parse(cursor.oldestAt))
+        cursor.oldestAt = at;
+      if (!cursor.newestAt || Date.parse(at) > Date.parse(cursor.newestAt))
+        cursor.newestAt = at;
+    }
+    if (harness === "codex")
+      for (const event of extractCodexSkillEvents(record)) {
+        const matched = matchPath(event.path, cursor.cwd);
+        if (!matched.length || !event.at) continue;
+        cursor.pending.push({
+          id: event.id,
+          names: matched,
+          evidence: "load",
+          at: event.at,
+        });
+        complete(cursor, harness, event.id, true);
+      }
     const add = (id: unknown, name: unknown, value: unknown) => {
       const args = object(value);
       let matched: string[] = [],
@@ -655,7 +860,9 @@ export async function scanSkillUsage(options: {
         );
     }
   };
-  const ordered = candidates.sort((a, b) => b.modified - a.modified);
+  const ordered = candidates.sort((a, b) =>
+    backfill ? a.modified - b.modified : b.modified - a.modified,
+  );
   if (ordered.length > LIMITS.files) limits.add("files");
   const fairFiles: Candidate[] = [];
   const byHarness = (["codex", "claude", "pi"] as const).map((harness) =>
@@ -686,6 +893,7 @@ export async function scanSkillUsage(options: {
     )
       cursor = {
         identity: file.identity,
+        harness: file.harness,
         offset: 0,
         mtimeMs: 0,
         cwd: "",
@@ -698,8 +906,8 @@ export async function scanSkillUsage(options: {
       continue;
     }
     let offset = cursor.offset;
-    let discard = false;
-    if (file.size - offset > LIMITS.perFile) {
+    let discard = cursor.skippingLine === true;
+    if (!backfill && file.size - offset > LIMITS.perFile) {
       offset = file.size - LIMITS.perFile;
       discard = true;
       cursor.omittedHistory = true;
@@ -711,7 +919,12 @@ export async function scanSkillUsage(options: {
         constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
       );
       try {
-        if (!(await handle.stat()).isFile()) {
+        const openedInfo = await handle.stat();
+        if (`${openedInfo.dev}:${openedInfo.ino}` !== file.identity) {
+          limits.add("changed_file");
+          continue;
+        }
+        if (!openedInfo.isFile()) {
           limits.add("non_regular_file");
           continue;
         }
@@ -752,8 +965,10 @@ export async function scanSkillUsage(options: {
         while (start < bytesRead && !stopped()) {
           const end = buffer.indexOf(10, start);
           if (end < 0 || end >= bytesRead) break;
-          if (discard) discard = false;
-          else {
+          if (discard) {
+            discard = false;
+            cursor.skippingLine = false;
+          } else {
             try {
               processRecord(
                 object(
@@ -764,14 +979,21 @@ export async function scanSkillUsage(options: {
               );
             } catch {
               limits.add("malformed_records");
+              cursor.errors = [
+                ...new Set([...(cursor.errors ?? []), "malformed_records"]),
+              ];
             }
           }
           start = end + 1;
         }
         cursor.offset = offset + start;
+        cursor.awaitingAppend =
+          start < bytesRead && offset + bytesRead === file.size;
+        if (cursor.awaitingAppend) limits.add("partial_record");
         if (!start && bytesRead === LIMITS.perFile) {
           cursor.offset = offset + bytesRead;
           cursor.omittedHistory = true;
+          cursor.skippingLine = true;
           limits.add("oversized_record");
         }
         cursor.mtimeMs = file.modified;
@@ -781,6 +1003,14 @@ export async function scanSkillUsage(options: {
       }
     } catch {
       limits.add("unreadable");
+      if (backfill) {
+        cache.backfill?.skipped.push("unreadable");
+        cache.files[key] = {
+          ...cursor,
+          offset: file.size,
+          errors: ["unreadable"],
+        };
+      }
     }
   }
   const retained = [...events.values()].sort(
@@ -788,17 +1018,105 @@ export async function scanSkillUsage(options: {
   );
   if (retained.length > LIMITS.events) cache.omittedEvents = true;
   cache.events = retained.slice(-LIMITS.events);
+  if (backfill && cache.backfill) {
+    cache.backfill.pending = candidates.filter((file) => {
+      const cursor = cache.files[digest(file.path)];
+      return !cursor || (cursor.offset < file.size && !cursor.awaitingAppend);
+    });
+    // A final torn line is deferred to the next traversal/tail; never block other files.
+    cache.backfill.completed =
+      !cache.backfill.queue.length && !cache.backfill.pending.length;
+    if (!cache.backfill.completed) limits.add("backfill_pending");
+  }
   const currentKeys = new Set(ordered.map((file) => digest(file.path)));
-  cache.files = Object.fromEntries(
-    Object.entries(cache.files)
-      .filter(([key]) => currentKeys.has(key))
-      .slice(-LIMITS.candidates),
-  );
+  if (!backfill)
+    cache.files = Object.fromEntries(
+      Object.entries(cache.files)
+        .filter(([key]) => currentKeys.has(key))
+        .slice(-LIMITS.candidates),
+    );
   if (
     cache.omittedEvents ||
     Object.values(cache.files).some((cursor) => cursor.omittedHistory)
   )
     limits.add("history_window");
+  const harnessCoverage: HarnessUsageCoverage[] = (
+    ["codex", "claude", "pi"] as const
+  ).map((harness) => {
+    const cursors = Object.values(cache.files).filter(
+      (cursor) => cursor.harness === harness,
+    );
+    const oldest = cursors
+      .map((c) => c.oldestAt)
+      .filter((at): at is string => !!at)
+      .sort((a, b) => Date.parse(a) - Date.parse(b));
+    const newest = cursors
+      .map((c) => c.newestAt)
+      .filter((at): at is string => !!at)
+      .sort((a, b) => Date.parse(b) - Date.parse(a));
+    const pending = cursors.reduce((sum, c) => sum + c.pending.length, 0);
+    const limitations = [
+      ...new Set([
+        ...(backfill
+          ? cache.backfill?.queue.some((item) => item.harness === harness) ||
+            cache.backfill?.pending.some((item) => item.harness === harness)
+            ? ["backfill_pending"]
+            : []
+          : [...limits]),
+        ...(backfill ? (cache.backfill?.skipped ?? []) : []),
+        ...cursors.flatMap((c) => (c.omittedHistory ? ["history_window"] : [])),
+        ...cursors.flatMap((c) => (c.awaitingAppend ? ["partial_record"] : [])),
+        ...cursors.flatMap((c) => c.errors ?? []),
+        ...(pending ? ["pending_results"] : []),
+      ]),
+    ];
+    return {
+      harness,
+      status:
+        limitations.length || !backfill
+          ? "partial"
+          : cursors.length
+            ? "scanned"
+            : "absent",
+      filesScanned: cursors.length,
+      pendingCalls: pending,
+      ...(oldest[0] ? { oldestAt: oldest[0] } : {}),
+      ...(newest[0] ? { newestAt: newest[0] } : {}),
+      limitations,
+    };
+  });
+  const backfillReport = cache.backfill
+    ? {
+        complete: cache.backfill.completed,
+        filesDiscovered: cache.backfill.filesDiscovered,
+        filesPending: cache.backfill.pending.length,
+      }
+    : undefined;
+  let historical:
+    | {
+        harnessCoverage: HarnessUsageCoverage[];
+        backfill: NonNullable<SkillUsageScan["backfill"]>;
+      }
+    | undefined;
+  if (!backfill)
+    try {
+      const saved = JSON.parse(
+        await readFile(join(directory, "coverage.json"), "utf8"),
+      );
+      if (saved.fingerprint === knownFingerprint) {
+        const parsed = skillUsageScanSchema.shape.harnessCoverage.safeParse(
+          saved.harnessCoverage,
+        );
+        const progress = skillUsageScanSchema.shape.backfill.safeParse(
+          saved.backfill,
+        );
+        if (parsed.success && parsed.data && progress.success && progress.data)
+          historical = {
+            harnessCoverage: parsed.data,
+            backfill: progress.data,
+          };
+      }
+    } catch {}
   const usage = new Map<string, SkillUsage>();
   for (const event of cache.events) {
     const key = `${event.name}:${event.harness}:${event.evidence}:${event.pathId ?? ""}`;
@@ -829,10 +1147,25 @@ export async function scanSkillUsage(options: {
   cache.lastCoverage = coverage;
   if (!options.signal?.aborted) {
     try {
-      await mkdir(dirname(options.cachePath), { recursive: true });
-      const pending = `${options.cachePath}.${randomUUID()}.tmp`;
+      await appendUsageEvents(
+        directory,
+        retained.filter(
+          (event) =>
+            !journalTimes.has(event.id) ||
+            Date.parse(event.at) < Date.parse(journalTimes.get(event.id)!),
+        ),
+      );
+      await saveUsageManifest(directory, options.knownSkills);
+      await mkdir(dirname(cachePath), { recursive: true });
+      const pending = `${cachePath}.${randomUUID()}.tmp`;
       await writeFile(pending, JSON.stringify(cache), { mode: 0o600 });
-      await rename(pending, options.cachePath);
+      await rename(pending, cachePath);
+      if (backfillReport)
+        await atomicUsageJson(join(directory, "coverage.json"), {
+          fingerprint: knownFingerprint,
+          harnessCoverage,
+          backfill: backfillReport,
+        });
     } catch {
       limits.add("cache_write_failed");
     }
@@ -847,6 +1180,17 @@ export async function scanSkillUsage(options: {
         a.harness.localeCompare(b.harness) ||
         a.evidence.localeCompare(b.evidence),
     ),
+    harnessCoverage: historical?.harnessCoverage ?? harnessCoverage,
+    ...(historical ? { backfill: historical.backfill } : {}),
+    ...(cache.backfill
+      ? {
+          backfill: {
+            complete: cache.backfill.completed,
+            filesDiscovered: cache.backfill.filesDiscovered,
+            filesPending: cache.backfill.pending.length,
+          },
+        }
+      : {}),
     history: cache.events.slice(-1000).reverse(),
     historyTruncated: cache.omittedEvents || cache.events.length > 1000,
     coverage,

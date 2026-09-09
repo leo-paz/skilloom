@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { loadCurrentInventory } from "../cli/inventory.js";
 import type { CliRuntime } from "../cli/runtime.js";
 import { syncMachine } from "../cli/sync.js";
+import { collectInventoryUsage, saveUsageIfCurrent } from "../cli/usage.js";
 import {
   loadInventorySnapshot,
   resolveConfigPaths,
@@ -59,6 +60,20 @@ export function createDashboardBackend(
       stopping = true;
       await cancelRead();
       await Promise.allSettled([...tasks].map((task) => task.promise));
+    },
+    async collectHistory(inventory: MachineInventory) {
+      return track(true, async (signal) => {
+        const next = await collectInventoryUsage(
+          inventory,
+          runtime.env,
+          join(dirname(paths.inventoryPath), "skill-usage-cache.json"),
+          inventory.skillUsage?.backfill?.complete ? "tail" : "backfill",
+          signal,
+        );
+        signal?.throwIfAborted();
+        await saveUsageIfCurrent(paths.inventoryPath, inventory, next);
+        return next;
+      });
     },
     async enrich(inventory: MachineInventory) {
       return track(true, async (signal) => {

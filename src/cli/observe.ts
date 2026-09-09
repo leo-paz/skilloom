@@ -24,6 +24,8 @@ function comparable(inventory: MachineInventory): string {
             usage: inventory.skillUsage.usage,
             history: inventory.skillUsage.history,
             historyTruncated: inventory.skillUsage.historyTruncated,
+            harnessCoverage: inventory.skillUsage.harnessCoverage,
+            backfill: inventory.skillUsage.backfill,
             coverage: inventory.skillUsage.coverage.status,
           },
         }
@@ -47,6 +49,8 @@ function comparablePublished(content: string): string {
               usage: parsed.skillUsage.usage,
               history: parsed.skillUsage.history,
               historyTruncated: parsed.skillUsage.historyTruncated,
+              harnessCoverage: parsed.skillUsage.harnessCoverage,
+              backfill: parsed.skillUsage.backfill,
               coverage: parsed.skillUsage.coverage.status,
             },
           }
@@ -58,7 +62,7 @@ function comparablePublished(content: string): string {
   }
 }
 
-function publishedObservation(
+export function publishedObservation(
   inventory: MachineInventory,
 ): Record<string, unknown> {
   const publicSource = (source: string | null): string | null =>

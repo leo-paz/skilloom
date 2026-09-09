@@ -20,6 +20,7 @@ export interface CommandResult {
   value: Record<string, unknown>;
 }
 export interface DashboardBackend {
+  collectHistory?: (inventory: MachineInventory) => Promise<MachineInventory>;
   enrich?: (inventory: MachineInventory) => Promise<MachineInventory>;
   cancelRead?: () => Promise<void>;
   load: (
@@ -476,14 +477,14 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
         behavior.push(
           ...field(
             harnessLabel(usage.harness),
-            `${usage.count} ${usage.evidence === "invoke" ? "invocations" : "skill reads"}`,
+            `${usage.count} ${usage.evidence === "invoke" ? "invocations" : usage.evidence === "load" ? "skill loads" : "skill reads"}`,
             columnWidth,
             color.good,
           ),
         );
         behavior.push(
           ...field(
-            "Last read",
+            usage.evidence === "load" ? "Last loaded" : "Last read",
             observedLabel(usage.lastUsedAt),
             columnWidth,
             color.muted,
@@ -556,9 +557,11 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       const label =
         event.evidence === "read"
           ? "Read SKILL.md"
-          : event.pathId
-            ? "Invoked"
-            : "Invoked by name";
+          : event.evidence === "load"
+            ? "Loaded skill"
+            : event.pathId
+              ? "Invoked"
+              : "Invoked by name";
       if (usableWidth >= 76)
         content.push(
           ...detailTableRow(
@@ -640,6 +643,39 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
         );
       content.push({ text: " " });
     }
+  }
+  for (const machine of entry.usageMachines) {
+    if (!machine.harnesses?.length) continue;
+    content.push(
+      { text: " " },
+      {
+        text: `${machine.name} · agent coverage`,
+        tone: color.accent,
+        bold: true,
+      },
+    );
+    for (const harness of machine.harnesses) {
+      const status =
+        harness.status === "scanned"
+          ? "Logs scanned"
+          : harness.status === "absent"
+            ? "No logs found"
+            : harness.status === "partial"
+              ? "Partial scan"
+              : "Not scanned";
+      content.push(
+        ...field(
+          harnessLabel(harness.harness),
+          `${status} · ${harness.filesScanned} files`,
+          usableWidth,
+        ),
+      );
+    }
+    if (machine.backfill && !machine.backfill.complete)
+      content.push({
+        text: "History backfill in progress. Browsing stays available.",
+        tone: color.muted,
+      });
   }
   return content.flatMap((line) =>
     line.cells ? [line] : wrapLines([line], usableWidth),
@@ -878,6 +914,32 @@ export function SkilloomApp({
       active = false;
     };
   }, [backend, inventory]);
+  useEffect(() => {
+    if (!inventory || busy || enriching || !backend.collectHistory) return;
+    let active = true;
+    const timer = setTimeout(
+      () => {
+        void backend.collectHistory!(inventory)
+          .then((next) => {
+            if (active)
+              setInventory((current) =>
+                current === inventory ? next : current,
+              );
+          })
+          .catch((error) => {
+            if (active)
+              setNotice(
+                `History paused: ${errorText(error)}. Press r to retry.`,
+              );
+          });
+      },
+      inventory.skillUsage?.backfill?.complete ? 30000 : 2000,
+    );
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [backend, inventory, busy, enriching]);
   const entries = useMemo(
     () => (inventory ? buildLibrary(inventory) : []),
     [inventory],

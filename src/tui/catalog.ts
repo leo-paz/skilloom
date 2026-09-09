@@ -1,4 +1,8 @@
 import { type InventoryOccurrence, queryInventory } from "../core/query.js";
+import type {
+  HarnessUsageCoverage,
+  SkillUsageScan,
+} from "../core/skill-usage.js";
 import type { MachineInventory } from "../core/types.js";
 export interface LibraryEntry {
   name: string;
@@ -13,6 +17,8 @@ export interface LibraryEntry {
     name: string;
     status: string;
     observedAt?: string;
+    harnesses?: HarnessUsageCoverage[] | undefined;
+    backfill?: SkillUsageScan["backfill"];
   }>;
 }
 export interface LibraryFilters {
@@ -92,6 +98,8 @@ export function buildLibrary(inventory: MachineInventory): LibraryEntry[] {
       id: machine.id,
       name: machine.name,
       status: usage?.coverage.status ?? "unscanned",
+      harnesses: usage?.harnessCoverage,
+      backfill: usage?.backfill,
       ...(usage ? { observedAt: usage.coverage.observedAt } : {}),
     };
   });

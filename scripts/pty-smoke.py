@@ -244,7 +244,7 @@ def fixture(home):
                      profiles=["personal"], machines=[dict(id="11111111-1111-4111-8111-111111111111", name="PTY Mac", profile="personal", local=True),
                          dict(id="pty-remote", name="PTY Studio", profile="personal", local=False, observedAt="2026-01-01T00:00:00Z", projects=0, globalSkills=1, changes=0)],
                      globalSkills=skills, projects=[project],
-                     skillUsage=dict(version=2, history=[dict(id="d" * 64, name="alpha-review", pathId="a" * 64, harness="codex", evidence="read", at="2026-01-01T00:00:00Z")], usage=[dict(name="alpha-review", pathId="a" * 64, harness="codex", evidence="read", count=2, lastUsedAt="2026-01-01T00:00:00Z")],
+                     skillUsage=dict(version=2, backfill=dict(complete=True, filesDiscovered=1, filesPending=0), history=[dict(id="d" * 64, name="alpha-review", pathId="a" * 64, harness="codex", evidence="read", at="2026-01-01T00:00:00Z")], usage=[dict(name="alpha-review", pathId="a" * 64, harness="codex", evidence="read", count=2, lastUsedAt="2026-01-01T00:00:00Z")],
                          coverage=dict(status="incomplete", filesDiscovered=1, filesScanned=1, bytesRead=100, limitsHit=["files"], observedAt="2026-01-01T00:00:00Z")),
                      remoteObservations=[dict(machine=dict(id="pty-remote", name="PTY Studio"), observedAt="2026-01-01T00:00:00Z", stale=True,
                          globalSkills=[skill("remote-only")], projects=[])],
