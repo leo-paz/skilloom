@@ -88,11 +88,9 @@ describe("full-screen skill library", () => {
       app.stdin.write("\r");
       await tick();
       expect(app.lastFrame()).toContain("2 skill reads");
-      if (width === 40) {
-        app.stdin.write("\u001b[B\u001b[B\u001b[B");
-        await tick();
-      }
-      expect(app.lastFrame()).toContain("Usage scan is partial");
+      app.stdin.write("\u001b[F");
+      await tick();
+      expect(app.lastFrame()).toContain("Partial scan");
     },
   );
   it("keeps declared availability distinct from usage and filters usage by machine", () => {
@@ -332,8 +330,10 @@ describe("full-screen skill library", () => {
     app.stdin.write("\u001b[F");
     await tick();
     expect(app.lastFrame()).toContain("Evidence coverage");
-    app.stdin.write("\u001b[5~");
-    await tick();
+    if (!app.lastFrame()?.includes("remote/source-7")) {
+      app.stdin.write("\u001b[5~");
+      await tick();
+    }
     expect(app.lastFrame()).toContain("remote/source-7");
     app.stdin.write("\u001b[H");
     await tick();

@@ -144,34 +144,28 @@ function Line({
 }
 interface DetailLine {
   text: string;
-  indent?: number;
   tone?: string | undefined;
   bold?: boolean;
 }
 function wrapLines(lines: DetailLine[], width: number): DetailLine[] {
-  return lines.flatMap((line) => {
-    const indent = " ".repeat(line.indent ?? 0);
-    return wrapAnsi(safeText(line.text), Math.max(8, width - indent.length), {
+  return lines.flatMap((line) =>
+    wrapAnsi(safeText(line.text), Math.max(8, width), {
       hard: true,
       trim: false,
     })
       .split("\n")
-      .map((text) => ({ ...line, text: indent + text }));
-  });
+      .map((text) => ({ ...line, text })),
+  );
 }
 function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
   const content: DetailLine[] = [
-    { text: "Skill details", tone: color.accent },
-    { text: entry.name, bold: true },
-    {
-      text: `${entry.machines.length} machine${entry.machines.length === 1 ? "" : "s"}, ${entry.occurrences.length} location${entry.occurrences.length === 1 ? "" : "s"}`,
-      tone: color.muted,
-    },
-    {
-      text: `Evidence collected: ${entry.usageMachines.filter((machine) => machine.status !== "unscanned").length}/${entry.usageMachines.length} selected machines`,
-      tone: color.muted,
-    },
+    { text: `Skill details · ${entry.name}`, bold: true },
   ];
+  if (entry.occurrences.length > 1)
+    content.push({
+      text: `${entry.machines.length} machine${entry.machines.length === 1 ? "" : "s"}, ${entry.occurrences.length} locations`,
+      tone: color.muted,
+    });
   const groups = new Map<
     string,
     {
@@ -222,148 +216,115 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       content.push(
         { text: " " },
         {
-          text: `Machine · ${record.machine.name}`,
+          text: record.machine.name,
           bold: true,
           tone: color.accent,
         },
       );
+      content.push({
+        text: `Last observed ${observedLabel(record.observedAt)}${record.stale ? " · Saved" : ""}`,
+        tone: color.muted,
+      });
       activeMachine = record.machine.id;
     } else content.push({ text: " " });
     const heading =
       record.scope === "global"
         ? "Global installation"
-        : `Project · ${record.projectName ?? "Unknown project"}`;
+        : record.projectId && !record.projectId.startsWith("local:")
+          ? `Repository: ${record.projectId}`
+          : `Local project: ${record.projectName ?? "Unknown"}`;
     const block: DetailLine[] = [
       {
         text: `${heading}${count > 1 ? ` (${count} locations)` : ""}`,
-        indent: 2,
         bold: true,
+        tone: color.repository,
       },
     ];
-    if (record.scope === "project")
-      block.push({
-        text:
-          record.projectId && !record.projectId.startsWith("local:")
-            ? `Project repository: ${record.projectId}`
-            : "Project repository: Local only",
-        tone: color.repository,
-        indent: 4,
-      });
     block.push({
       text: `Skill source: ${record.source ?? "Unknown"}`,
       tone: record.source ? color.repository : color.muted,
-      indent: 4,
     });
     const owner = ownershipLabel(record);
     block.push({
       text: `${record.installed ? "Installed" : "Missing"} · ${owner === "Managed" ? "Managed by Skilloom" : owner}${record.desired ? " · Required" : ""}`,
       tone: record.installed ? undefined : color.warning,
-      indent: 4,
     });
     for (const path of [...new Set(paths)])
-      block.push({ text: `Path: ${path}`, tone: color.muted, indent: 4 });
+      block.push({ text: `Path: ${path}`, tone: color.muted });
     if (!paths.length && record.checkoutId)
       block.push({
         text: `Checkout ID: ${record.checkoutId}`,
         tone: color.muted,
-        indent: 4,
       });
+    const variants = record.metadata?.variants ?? [];
+    const known = variants.filter(
+      (variant) =>
+        variant.status === "read" && variant.invocation !== "unknown",
+    );
+    const mode = record.metadata?.invocation ?? "unknown";
+    const uniform =
+      known.length > 0 && known.every((variant) => variant.invocation === mode);
     block.push(
       { text: " " },
       {
-        text: `Invocation: ${invocationLabel(record.metadata?.invocation ?? "unknown")} (declared)`,
-        bold: true,
-        indent: 4,
+        text: `Invocation: ${invocationLabel(mode)} (declared)${uniform ? ` · ${known.map((variant) => variant.agent).join(", ")}` : ""}`,
       },
       {
         text: `Available to: ${record.agents.join(", ") || "Unknown"}`,
         tone: color.muted,
-        indent: 4,
       },
     );
-    const variants = record.metadata?.variants ?? [];
     for (const variant of variants.filter(
-      (variant) => variant.status !== "unsupported",
+      (variant) =>
+        variant.status !== "unsupported" &&
+        !(uniform && known.includes(variant)),
     ))
       block.push({
         text: `${variant.agent}: ${invocationLabel(variant.invocation)} · ${variant.status}`,
         tone: color.muted,
-        indent: 4,
       });
-    const unsupported = variants.filter(
+    const unsupportedCount = variants.filter(
       (variant) => variant.status === "unsupported",
-    );
-    if (unsupported.length)
+    ).length;
+    if (unsupportedCount)
       block.push({
-        text: `Unsupported declarations: ${unsupported.map((variant) => variant.agent).join(", ")}`,
+        text: `Invocation unknown for ${unsupportedCount} agent${unsupportedCount === 1 ? "" : "s"}.`,
         tone: color.muted,
-        indent: 4,
       });
     if (record.detectedAgents)
       block.push({
         text: `Detected here: ${record.detectedAgents.join(", ")}`,
         tone: color.muted,
-        indent: 4,
       });
-    block.push({ text: " " }, { text: "Read evidence", bold: true, indent: 4 });
+    block.push({ text: " " });
     if (record.usedBy?.length) {
-      block.push({
-        text: "Confirmed at this installation path",
-        tone: color.muted,
-        indent: 4,
-      });
       for (const usage of record.usedBy)
         block.push({
-          text: `${harnessLabel(usage.harness)} · ${usage.count} ${usage.evidence === "invoke" ? "invocations" : "skill reads"} · ${observedLabel(usage.lastUsedAt)}`,
+          text: `Read evidence: ${harnessLabel(usage.harness)} · ${usage.count} ${usage.evidence === "invoke" ? "invocations" : "skill reads"} · ${observedLabel(usage.lastUsedAt)}`,
           tone: color.good,
-          indent: 4,
         });
     } else
       block.push({
         text: record.usageCoverage
-          ? "No matching installed-path evidence in this scan."
-          : "Unscanned on this machine. Collect and publish its evidence.",
+          ? "Read evidence: No matches in scanned logs."
+          : "Read evidence: Unscanned on this machine.",
         tone: color.muted,
-        indent: 4,
       });
     if (record.nameEvidence?.length)
       block.push({
         text: `Name-only invocations: ${record.nameEvidence.map((usage) => harnessLabel(usage.harness)).join(", ")}. Not attributed to this installation.`,
         tone: color.muted,
-        indent: 4,
       });
-    if (record.usageObservedAt)
-      block.push({
-        text: `Evidence scanned ${observedLabel(record.usageObservedAt)}`,
-        tone: color.muted,
-        indent: 4,
-      });
-    if (record.usageCoverage === "incomplete")
-      block.push({
-        text: "Usage scan is partial; more evidence may exist.",
-        tone: color.muted,
-        indent: 4,
-      });
-    block.push({
-      text: `Last observed ${observedLabel(record.observedAt)}${record.stale ? " · Saved" : ""}`,
-      tone: color.muted,
-      indent: 4,
-    });
     if (record.conflict)
-      block.push({ text: record.conflict, tone: color.error, indent: 4 });
+      block.push({ text: record.conflict, tone: color.error });
     content.push(...block);
   }
   content.push({ text: " " }, { text: "Evidence coverage", bold: true });
-  for (const machine of entry.usageMachines) {
-    content.push(
-      { text: machine.name, tone: color.accent, indent: 2 },
-      {
-        text: `${machine.status === "unscanned" ? "Unscanned" : machine.status === "incomplete" ? "Partial scan" : "Supported scan complete"}${machine.observedAt ? ` · ${observedLabel(machine.observedAt)}` : ""}`,
-        tone: color.muted,
-        indent: 4,
-      },
-    );
-  }
+  for (const machine of entry.usageMachines)
+    content.push({
+      text: `${machine.name} · ${machine.status === "unscanned" ? "Unscanned" : machine.status === "incomplete" ? "Partial scan" : "Supported scan complete"}${machine.observedAt ? ` · ${observedLabel(machine.observedAt)}` : ""}`,
+      tone: color.muted,
+    });
   return wrapLines(content, width - 2);
 }
 function Preview({
@@ -451,10 +412,12 @@ function Inspector({
           {line.text}
         </Line>
       ))}
-      <Line tone={color.accent}>
-        Details · {start + 1}–{Math.min(start + page, wrapped.length)}/
-        {wrapped.length}
-      </Line>
+      {wrapped.length > page && (
+        <Line tone={color.accent}>
+          Details · {start + 1}–{Math.min(start + page, wrapped.length)}/
+          {wrapped.length}
+        </Line>
+      )}
     </Box>
   );
 }
@@ -634,7 +597,9 @@ export function SkilloomApp({
     !help;
   const bodyHeight = Math.max(
     5,
-    size.height - (view === "Library" ? 8 : 6) - (showLibrarySync ? 1 : 0),
+    size.height -
+      (view === "Library" && !details ? 8 : 6) -
+      (showLibrarySync ? 1 : 0),
   );
   const skillColumnWidth = Math.max(
     8,
@@ -1345,9 +1310,10 @@ export function SkilloomApp({
         : searching
           ? "Enter/Esc results · ↑↓ select"
           : details
-            ? tiny
+            ? selected &&
+              inspectorLines(selected, size.width).length > bodyHeight - 1
               ? "Esc results · ↑↓ scroll"
-              : "Esc results · ↑↓ scroll"
+              : "Esc results"
             : view !== "Library"
               ? tiny
                 ? "↑↓ select · Enter open · Esc library"
@@ -1665,37 +1631,29 @@ export function SkilloomApp({
           {!tiny && <Text dimColor>Review before applying</Text>}
         </Box>
       )}
-      {view === "Library" && (
+      {view === "Library" && !details && (
         <>
           <Box paddingX={1}>
             <Text
               wrap="truncate-end"
               color={searching ? color.accent : color.muted}
             >
-              {details
-                ? "Esc returns to your results"
-                : searching
-                  ? "Editing search: "
-                  : "Search: "}
-              {!details &&
-                (searching
-                  ? `${Array.from(query)
-                      .slice(
-                        Math.max(
-                          0,
-                          searchCursor - Math.max(5, size.width - 24),
-                        ),
-                        searchCursor,
-                      )
-                      .join(
-                        "",
-                      )}▏${Array.from(query).slice(searchCursor).join("")}`
-                  : query || "press /")}
+              {searching ? "Editing search: " : "Search: "}
+              {searching
+                ? `${Array.from(query)
+                    .slice(
+                      Math.max(0, searchCursor - Math.max(5, size.width - 24)),
+                      searchCursor,
+                    )
+                    .join(
+                      "",
+                    )}▏${Array.from(query).slice(searchCursor).join("")}`
+                : query || "press /"}
             </Text>
           </Box>
           <Box paddingX={1} justifyContent="space-between">
             <Text wrap="truncate-end">
-              {!details && !searching
+              {!searching
                 ? `‹ ${safeText(selectedMachine)} ›`
                 : safeText(selectedMachine)}
               {scope === "all" ? "" : ` · ${scope}`}

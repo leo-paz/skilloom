@@ -2,4 +2,4 @@
 "skilloom": patch
 ---
 
-Clarify skill details with machine sections, separately labelled project repositories and skill sources, and indented metadata that wraps consistently in narrow terminals.
+Clarify skill details with a flat layout, distinct machine and repository headings, separately labelled skill sources, and consolidated declaration and scan metadata.
