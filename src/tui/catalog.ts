@@ -39,7 +39,10 @@ function group(
     .map(([name, occurrences]) => {
       const invocations = [
         ...new Set(
-          occurrences.map((record) => record.metadata?.invocation ?? "unknown"),
+          occurrences.map((record) => {
+            const mode = record.metadata?.invocation ?? "unknown";
+            return mode === "both" ? "automatic" : mode;
+          }),
         ),
       ];
       const owners = [...new Set(occurrences.map(ownershipLabel))];
@@ -149,8 +152,8 @@ export function invocationLabel(value: string): string {
     (
       {
         manual: "Manual",
-        automatic: "Auto",
-        both: "Both",
+        automatic: "Automatic",
+        both: "Manual + automatic",
         disabled: "Disabled",
         mixed: "Mixed",
         partial: "—",

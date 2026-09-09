@@ -86,7 +86,7 @@ describe("full-screen skill library", () => {
       await tick();
       expect(app.lastFrame()).toContain("code-review");
       expect(app.lastFrame()).toContain("Invocation");
-      expect(app.lastFrame()).toContain("Both");
+      expect(app.lastFrame()).toContain("Automatic");
       expect(app.lastFrame()).toContain("—");
       expect(app.lastFrame()).not.toContain("Evidence");
       if (width >= 65) {
@@ -102,6 +102,25 @@ describe("full-screen skill library", () => {
       expect(app.lastFrame()).toContain("Partial scan");
     },
   );
+  it("groups automatic-capable copies together while preserving their declarations", () => {
+    const inventory = inventoryFixture();
+    const local = inventory.globalSkills[0]!;
+    const remote: typeof local = {
+      ...local,
+      metadata: { ...local.metadata!, invocation: "automatic" },
+    };
+    inventory.remoteObservations![0]!.globalSkills = [remote];
+    expect(
+      buildLibrary(inventory).find((row) => row.name === local.name)
+        ?.invocation,
+    ).toBe("automatic");
+    expect(local.metadata?.invocation).toBe("both");
+    remote.metadata = { ...remote.metadata!, invocation: "manual" };
+    expect(
+      buildLibrary(inventory).find((row) => row.name === local.name)
+        ?.invocation,
+    ).toBe("mixed");
+  });
   it("keeps declared availability distinct from usage and filters usage by machine", () => {
     const inventory = inventoryFixture();
     const rows = buildLibrary(inventory);
