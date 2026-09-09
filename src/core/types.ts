@@ -1,3 +1,5 @@
+import type { SkillMetadata } from "./skill-metadata.js";
+import type { SkillUsageScan } from "./skill-usage.js";
 export type Scope = "global" | "project";
 
 export interface SkillRequirement {
@@ -12,6 +14,7 @@ export interface DesiredSkill extends SkillRequirement {
 }
 
 export interface InstalledSkill {
+  metadata?: SkillMetadata | undefined;
   detectedAgents?: string[] | undefined;
   missing?: boolean | undefined;
   path?: string | undefined;
@@ -73,6 +76,7 @@ export interface LocalMachine {
 }
 
 export interface InventorySkill {
+  metadata?: SkillMetadata | undefined;
   detectedAgents?: string[] | undefined;
   ownership?: "repository" | "personal" | undefined;
   desiredSource?: string | null | undefined;
@@ -113,6 +117,7 @@ export interface InventoryProgress {
 }
 
 export interface MachineInventory {
+  skillUsage?: SkillUsageScan | undefined;
   ownershipRelease?: OwnershipReleaseDelta | undefined;
   cached?: boolean | undefined;
   remoteObservations?:
@@ -120,6 +125,7 @@ export interface MachineInventory {
         machine: { id: string; name: string };
         observedAt: string;
         stale?: boolean | undefined;
+        skillUsage?: SkillUsageScan | undefined;
         globalSkills?: InventorySkill[] | undefined;
         projects: Array<{
           id: string;

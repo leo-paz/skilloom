@@ -9,6 +9,15 @@ export interface InventoryQuery {
 }
 
 export interface InventoryOccurrence extends InventorySkill {
+  usedBy?:
+    | Array<{
+        harness: string;
+        evidence: string;
+        count: number;
+        lastUsedAt: string;
+      }>
+    | undefined;
+  usageCoverage?: string | undefined;
   machine: { id: string; name: string };
   observedAt: string;
   stale: boolean;
@@ -79,6 +88,36 @@ export function queryInventory(
         for (const skill of project.skills)
           records.push({ ...skill, ...projectContext });
       }
+    }
+  }
+  const usageByMachine = new Map<
+    string,
+    {
+      coverage: string;
+      skills: Map<string, NonNullable<InventoryOccurrence["usedBy"]>>;
+    }
+  >();
+  for (const snapshot of [inventory, ...(inventory.remoteObservations ?? [])]) {
+    if (!snapshot.skillUsage) continue;
+    const skills = new Map<
+      string,
+      NonNullable<InventoryOccurrence["usedBy"]>
+    >();
+    for (const item of snapshot.skillUsage.usage) {
+      const rows = skills.get(item.name) ?? [];
+      rows.push(item);
+      skills.set(item.name, rows);
+    }
+    usageByMachine.set(snapshot.machine.id, {
+      coverage: snapshot.skillUsage.coverage.status,
+      skills,
+    });
+  }
+  for (const record of records) {
+    const usage = usageByMachine.get(record.machine.id);
+    if (usage) {
+      record.usedBy = usage.skills.get(record.name) ?? [];
+      record.usageCoverage = usage.coverage;
     }
   }
   const search = query.query?.toLowerCase();

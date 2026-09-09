@@ -17,6 +17,14 @@ import type { CliRuntime } from "./runtime.js";
 function comparable(inventory: MachineInventory): string {
   return JSON.stringify({
     ...inventory,
+    ...(inventory.skillUsage
+      ? {
+          skillUsage: {
+            usage: inventory.skillUsage.usage,
+            coverage: inventory.skillUsage.coverage.status,
+          },
+        }
+      : {}),
     observedAt: "",
     machines: inventory.machines
       .filter((machine) => machine.local)
@@ -26,7 +34,19 @@ function comparable(inventory: MachineInventory): string {
 
 function comparablePublished(content: string): string {
   try {
-    return JSON.stringify({ ...JSON.parse(content), observedAt: "" });
+    const parsed = JSON.parse(content);
+    return JSON.stringify({
+      ...parsed,
+      ...(parsed.skillUsage
+        ? {
+            skillUsage: {
+              usage: parsed.skillUsage.usage,
+              coverage: parsed.skillUsage.coverage.status,
+            },
+          }
+        : {}),
+      observedAt: "",
+    });
   } catch {
     return content;
   }
@@ -71,6 +91,7 @@ function publishedObservation(
       checkoutsFound: inventory.discovery.checkoutsFound,
     },
     profiles: inventory.profiles,
+    ...(inventory.skillUsage ? { skillUsage: inventory.skillUsage } : {}),
     globalSkills: inventory.globalSkills.map(publicSkill),
     projects: inventory.projects.map((project) => ({
       id: project.id,

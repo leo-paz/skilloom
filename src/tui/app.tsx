@@ -5,6 +5,8 @@ import type { InventoryProgress, MachineInventory } from "../core/types.js";
 import {
   buildLibrary,
   filterLibrary,
+  harnessLabel,
+  invocationLabel,
   type LibraryEntry,
   observedLabel,
   ownershipLabel,
@@ -186,6 +188,7 @@ function inspectorLines(
           record.installed,
           record.desired,
           record.conflict,
+          record.metadata,
         ]);
     const group = groups.get(key);
     if (group) group.count++;
@@ -220,7 +223,38 @@ function inspectorLines(
       text: `${technical ? "Available to" : "Agents"}: ${agents || "Unknown"}`,
       tone: color.muted,
     });
+    content.push({
+      text: `Invocation: ${invocationLabel(record.metadata?.invocation ?? "unknown")} (declared)`,
+      tone: color.muted,
+    });
+    if (record.usedBy?.length) {
+      content.push({
+        text: "Observed usage on this machine (same skill name; may span locations):",
+        tone: color.muted,
+      });
+      for (const usage of record.usedBy)
+        content.push({
+          text: `${harnessLabel(usage.harness)} · ${usage.count} ${usage.evidence === "invoke" ? "invocations" : "skill reads"} · ${observedLabel(usage.lastUsedAt)}`,
+          tone: color.muted,
+        });
+    } else
+      content.push({
+        text: record.usageCoverage
+          ? "Used by: no evidence in scanned logs; not proof of non-use."
+          : "Used by: not collected in this snapshot. Refresh on its machine.",
+        tone: color.muted,
+      });
+    if (record.usageCoverage === "incomplete")
+      content.push({
+        text: "Usage scan is partial; more evidence may exist.",
+        tone: color.muted,
+      });
     if (technical) {
+      for (const variant of record.metadata?.variants ?? [])
+        content.push({
+          text: `${variant.agent}: ${invocationLabel(variant.invocation)} · ${variant.status}`,
+          tone: color.muted,
+        });
       if (record.detectedAgents)
         content.push({
           text: `Detected here: ${record.detectedAgents.join(", ")}`,
@@ -460,7 +494,7 @@ export function SkilloomApp({
     );
     setMachine(next);
   };
-  const narrow = size.width < 100;
+  const narrow = size.width < 120;
   const tiny = size.width < 65;
   const showLibrarySync =
     view === "Library" &&
@@ -474,6 +508,10 @@ export function SkilloomApp({
   const bodyHeight = Math.max(
     5,
     size.height - (view === "Library" ? 8 : 6) - (showLibrarySync ? 1 : 0),
+  );
+  const skillColumnWidth = Math.max(
+    8,
+    (narrow ? size.width : Math.floor(size.width * 0.7)) - 4 - (tiny ? 18 : 43),
   );
   const pageSize = Math.max(1, bodyHeight - 4);
   useEffect(() => {
@@ -1214,20 +1252,22 @@ export function SkilloomApp({
     );
   } else if (help)
     content = (
-      <Box flexDirection="column" padding={1}>
+      <Box flexDirection="column" paddingX={1}>
         <Line bold>Keyboard guide</Line>
         {[
-          "1–3 Switch view   Tab Next   Shift-Tab Previous",
-          "/ Search   ←/→ Edit text   Enter/Esc Results",
-          "↑↓ or j/k Select   Details: i Show technical information",
-          "←/→ Change machine in Results   g Scope   o Ownership",
-          "Enter Open skill details   Esc Return to results   x Clear filters",
-          "r Refresh this machine and pull published observations",
-          "s Preview local sync, then explicitly confirm to apply",
-          "a Add requirement   d Remove requirement   v Verify source",
-          "Settings: p Create profile   b Choose profile   c Connect   m Migrate",
-          "Remote snapshots describe the last observation, never live execution.",
-          "? or Esc Close help",
+          "1–3 views · Tab next · Shift-Tab back",
+          "/ search · Enter/Esc results",
+          "↑↓ or j/k select · Enter details",
+          "←/→ machine · g scope · o ownership",
+          "x clear filters · r refresh",
+          "s review sync · y apply in review",
+          "a add · d remove · v verify source",
+          "Details: Esc results · i technical",
+          "Invoke: Manual / Auto / Both / ? unknown",
+          "Mixed varies; Partial has unknowns",
+          "Used by: observed read/invocation",
+          "— no evidence · OAI OpenAI · Cl Claude",
+          "?/Esc close help · q quit",
         ].map((x) => (
           <Line key={x}>{x}</Line>
         ))}
@@ -1373,7 +1413,7 @@ export function SkilloomApp({
         <Box
           flexDirection="column"
           flexGrow={1}
-          width={narrow ? size.width : Math.floor(size.width * 0.6)}
+          width={narrow ? size.width : Math.floor(size.width * 0.7)}
           borderStyle="single"
           borderColor={searching ? color.muted : color.accent}
           paddingX={1}
@@ -1382,7 +1422,7 @@ export function SkilloomApp({
             Results{searching ? "" : " · ↑↓ select"}
           </Line>
           <Box>
-            <Box flexGrow={1}>
+            <Box width={skillColumnWidth} paddingRight={1}>
               <Text bold>Skill</Text>
             </Box>
             {!tiny && (
@@ -1390,9 +1430,17 @@ export function SkilloomApp({
                 <Text dimColor>Ownership</Text>
               </Box>
             )}
-            <Box width={4}>
-              <Text dimColor>On</Text>
+            <Box width={tiny ? 8 : 10}>
+              <Text dimColor>Invoke</Text>
             </Box>
+            <Box width={tiny ? 10 : 17}>
+              <Text dimColor>Used by</Text>
+            </Box>
+            {!tiny && (
+              <Box width={4}>
+                <Text dimColor>On</Text>
+              </Box>
+            )}
           </Box>
           {rows.length === 0 ? (
             <Box flexDirection="column" marginTop={1}>
@@ -1402,7 +1450,7 @@ export function SkilloomApp({
           ) : (
             rows.slice(offset, offset + pageSize).map((row, i) => (
               <Box key={row.name}>
-                <Box flexGrow={1}>
+                <Box width={skillColumnWidth} paddingRight={1}>
                   <Text
                     wrap="truncate-end"
                     {...(offset + i === index ? { color: color.accent } : {})}
@@ -1426,23 +1474,37 @@ export function SkilloomApp({
                     </Text>
                   </Box>
                 )}
-                <Box width={4}>
-                  <Text color={color.muted}>{row.machines.length}</Text>
+                <Box width={tiny ? 8 : 10}>
+                  <Text color={color.muted} wrap="truncate-end">
+                    {invocationLabel(row.invocation)}
+                  </Text>
                 </Box>
+                <Box width={tiny ? 10 : 17}>
+                  <Text color={color.muted} wrap="truncate-end">
+                    {row.usedBy
+                      .map((harness) => harnessLabel(harness, tiny))
+                      .join(" ") || "—"}
+                  </Text>
+                </Box>
+                {!tiny && (
+                  <Box width={4}>
+                    <Text color={color.muted}>{row.machines.length}</Text>
+                  </Box>
+                )}
               </Box>
             ))
           )}
         </Box>
         {!narrow && (
           <Box
-            width={Math.floor(size.width * 0.4)}
+            width={size.width - Math.floor(size.width * 0.7)}
             borderStyle="single"
             borderColor={color.muted}
           >
             <Preview
               entry={selected}
               lines={bodyHeight - 2}
-              width={Math.floor(size.width * 0.4) - 2}
+              width={size.width - Math.floor(size.width * 0.7) - 2}
             />
           </Box>
         )}

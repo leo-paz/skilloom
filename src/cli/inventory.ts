@@ -14,6 +14,8 @@ import {
 } from "../core/config.js";
 import { buildInventory } from "../core/inventory.js";
 import { type InventoryQuery, queryInventory } from "../core/query.js";
+import { skillMetadataSchema } from "../core/skill-metadata.js";
+import { scanSkillUsage, skillUsageScanSchema } from "../core/skill-usage.js";
 import type {
   LocalMachine,
   MachineInventory,
@@ -22,6 +24,7 @@ import type {
 import type { CliRuntime } from "./runtime.js";
 
 const observedSkill = z.object({
+  metadata: skillMetadataSchema.optional(),
   name: z.string(),
   source: z.string().nullable(),
   scope: z.enum(["global", "project"]),
@@ -153,6 +156,7 @@ export async function loadCurrentInventory(
           globalSkills?: unknown;
           operations?: unknown;
           projects?: unknown;
+          skillUsage?: unknown;
         };
         if (
           typeof observed.observedAt !== "string" ||
@@ -166,12 +170,14 @@ export async function loadCurrentInventory(
         if (!machine || machine.local) continue;
         const projects = remoteProjects.safeParse(observed.projects);
         const globals = z.array(observedSkill).safeParse(observed.globalSkills);
+        const usage = skillUsageScanSchema.safeParse(observed.skillUsage);
         if (projects.success) {
           inventory.remoteObservations ??= [];
           inventory.remoteObservations.push({
             machine: { id: machine.id, name: machine.name },
             observedAt: observed.observedAt,
             stale: true,
+            ...(usage.success ? { skillUsage: usage.data } : {}),
             ...(globals.success ? { globalSkills: globals.data } : {}),
             projects: projects.data,
           });
@@ -198,6 +204,22 @@ export async function loadCurrentInventory(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  runtime.signal?.throwIfAborted();
+  runtime.onProgress?.({ phase: "usage", completed: 0, total: 1 });
+  inventory.skillUsage = await scanSkillUsage({
+    env: runtime.env,
+    cachePath: join(dirname(paths.inventoryPath), "skill-usage-cache.json"),
+    knownSkills: [
+      ...new Set([
+        ...inventory.globalSkills.map((skill) => skill.name),
+        ...inventory.projects.flatMap((project) =>
+          project.skills.map((skill) => skill.name),
+        ),
+      ]),
+    ].map((name) => ({ name })),
+    ...(runtime.signal ? { signal: runtime.signal } : {}),
+  });
+  runtime.onProgress?.({ phase: "usage", completed: 1, total: 1 });
   return inventory;
 }
 

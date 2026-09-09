@@ -238,7 +238,7 @@ describe("CLI", () => {
     expect(JSON.parse(test.out.at(-1) ?? "{}")).toMatchObject({
       ok: true,
       command: "observe",
-      changed: false,
+      changed: true, // First observation adds trace-scan coverage to the setup snapshot.
       published: false,
     });
     expect(

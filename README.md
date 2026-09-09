@@ -29,9 +29,17 @@ If you omit the workspace, Skilloom uses existing conventional roots such as `~/
 
 The bare command or `skilloom tui` opens the Ink interface in the terminal's alternate screen. It starts with the saved observation when available and shows its timestamp. Press `r` to refresh local state. If no configuration exists, the interface offers setup.
 
+Skilloom executes on the computer where it is launched. The shared Git repository stores machine IDs, profiles, requirements, and published observations. A listed remote machine is registered, not necessarily reachable: Skilloom does not probe SSH or dispatch commands remotely. Run sync on each machine to apply its own configuration.
+
 ## Browse the skill library
 
 The Library combines global and project skills across local checkouts and published remote observations. The list is always the active control while browsing. Its read-only preview summarizes the selected skill by source, ownership and machine. Enter opens a separate full-width details view; repeated installations with the same facts are grouped. Press `i` there for individual checkout paths, full agent coverage and observation timestamps. Different sources and ownership remain distinct between independent clones. Unknown sources remain visible.
+
+Rows show **Invoke** (declared invocation mode) and **Used by** (observed harness usage), alongside ownership and machine count when space permits. Invoke is Manual, Auto, Both, Disabled, Mixed, Partial, or `?` when unknown. Mixed means known declarations disagree; Partial means some occurrences have no known declaration. Modes describe supported declarations, not runtime settings or permissions; open details and press `i` for the per-harness declaration evidence. Claude frontmatter flags, Codex `agents/openai.yaml` policy, and Pi declarations are interpreted separately.
+
+**Used by** lists OpenAI, Claude, and Pi only when a scanned local trace records a successful skill invocation or a recognized `SKILL.md` read. Compact terminals use OAI / Cl / Pi. A read proves the skill file was loaded, not that its advice was followed. `—` means no evidence in the scanned logs, not that a skill was never used. Details show counts, last seen, and partial scan status. Usage aggregates by skill name on each machine; it does not claim which same-name checkout or source was used. Agent availability remains in skill details and is never treated as usage.
+
+Saved inventory opens without rescanning logs. Explicit refresh/observe scans declarations and updates a bounded incremental usage cache outside the render path. Trace content remains local; published observations contain only invocation metadata and usage summaries. Remote rows keep the publication timestamp and remain snapshots.
 
 | Key | Action |
 | --- | --- |

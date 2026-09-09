@@ -22,6 +22,11 @@ export const inventoryFixture = (): MachineInventory => ({
   globalSkills: [
     {
       name: "code-review",
+      metadata: {
+        source: "skill-declaration",
+        invocation: "both",
+        variants: [{ agent: "codex", invocation: "both", status: "read" }],
+      },
       source: "acme/review",
       agents: ["codex"],
       scope: "global",
@@ -60,6 +65,25 @@ export const inventoryFixture = (): MachineInventory => ({
     },
   ],
   operations: [],
+  skillUsage: {
+    usage: [
+      {
+        name: "code-review",
+        harness: "codex",
+        evidence: "read",
+        count: 2,
+        lastUsedAt: "2026-09-08T11:00:00.000Z",
+      },
+    ],
+    coverage: {
+      status: "incomplete",
+      filesDiscovered: 1,
+      filesScanned: 1,
+      bytesRead: 100,
+      limitsHit: ["files"],
+      observedAt: "2026-09-08T12:00:00.000Z",
+    },
+  },
   remoteObservations: [
     {
       machine: { id: "remote", name: "Studio" },

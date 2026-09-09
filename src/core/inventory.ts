@@ -12,6 +12,7 @@ import { loadProjectConfig } from "./config.js";
 import { releaseOwnership } from "./ownership-release.js";
 import { managedStateKey, planChanges } from "./plan.js";
 import { resolveDesiredState } from "./resolve.js";
+import { createSkillMetadataReader } from "./skill-metadata.js";
 import type {
   DesiredSkill,
   InstalledSkill,
@@ -184,6 +185,7 @@ function inventorySkills(
       !skill.repositoryOwned &&
       managed.has(managedStateKey(skill, projectRoot));
     if (existing) {
+      if (skill.metadata) existing.metadata = skill.metadata;
       existing.installed = !skill.missing;
       existing.managed = isManaged;
       existing.source = skill.source;
@@ -219,6 +221,7 @@ function inventorySkills(
         ...(skill.detectedAgents
           ? { detectedAgents: [...skill.detectedAgents] }
           : {}),
+        ...(skill.metadata ? { metadata: skill.metadata } : {}),
         installed: !skill.missing,
         desired: false,
         managed: isManaged,
@@ -260,6 +263,7 @@ export async function buildInventory(
   request: InventoryRequest,
   dependencies: InventoryDependencies,
 ): Promise<MachineInventory> {
+  const readMetadata = createSkillMetadataReader(request.env);
   const observedAt = (dependencies.now?.() ?? new Date()).toISOString();
   let rootsCompleted = 0;
   dependencies.onProgress?.({
@@ -315,6 +319,9 @@ export async function buildInventory(
     request.cwd,
     request.env,
   );
+  await concurrentMap(globalInstalled, concurrency, async (skill) => {
+    if (!skill.missing) skill.metadata = await readMetadata(skill, request.cwd);
+  });
   const globalDesired = resolveDesiredState(
     request.config,
     request.machine.id,
@@ -334,6 +341,10 @@ export async function buildInventory(
         checkout.path,
         await dependencies.listSkills("project", checkout.path, request.env),
       );
+      for (const skill of installed) {
+        if (!skill.missing)
+          skill.metadata = await readMetadata(skill, checkout.path);
+      }
       const manifest = await loadProjectConfig(
         join(checkout.path, ".skilloom.yaml"),
       );

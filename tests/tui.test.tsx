@@ -31,6 +31,45 @@ const mount = (width = 120, api = backend()) => {
 };
 
 describe("full-screen skill library", () => {
+  it.each([40, 100, 140])(
+    "shows declared invocation and observed usage columns at %i columns",
+    async (width) => {
+      const api = backend();
+      const app = mount(width, api);
+      await tick();
+      expect(app.lastFrame()).toContain("Invoke");
+      expect(app.lastFrame()).toContain("Used by");
+      expect(app.lastFrame()).toContain("Both");
+      expect(app.lastFrame()).toContain(width < 65 ? "OAI" : "OpenAI");
+      expect(api.execute).not.toHaveBeenCalled();
+      app.stdin.write("\r");
+      await tick();
+      expect(app.lastFrame()).toContain("2 skill reads");
+      expect(app.lastFrame()).toContain("Usage scan is partial");
+    },
+  );
+  it("keeps declared availability distinct from usage and filters usage by machine", () => {
+    const inventory = inventoryFixture();
+    const rows = buildLibrary(inventory);
+    expect(rows.find((row) => row.name === "code-review")?.usedBy).toEqual([
+      "codex",
+    ]);
+    expect(rows.find((row) => row.name === "design-system")?.usedBy).toEqual(
+      [],
+    );
+    expect(rows.find((row) => row.name === "remote-research")?.usedBy).toEqual(
+      [],
+    );
+    const localCopy = { ...inventory.globalSkills[0]! };
+    inventory.remoteObservations![0]!.globalSkills = [localCopy];
+    const remoteRows = filterLibrary(buildLibrary(inventory), {
+      machine: "remote",
+      query: "code-review",
+      scope: "all",
+      ownership: "all",
+    });
+    expect(remoteRows[0]?.usedBy).toEqual([]);
+  });
   it("indexes every machine and searches source, project, and agent metadata", () => {
     const rows = buildLibrary(inventoryFixture());
     expect(rows.map((x) => x.name)).toEqual([

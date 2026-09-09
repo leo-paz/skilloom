@@ -6,6 +6,8 @@ export interface LibraryEntry {
   sources: string[];
   ownership: string;
   machines: string[];
+  invocation: string;
+  usedBy: string[];
 }
 export interface LibraryFilters {
   query: string;
@@ -26,9 +28,27 @@ function group(records: InventoryOccurrence[]): LibraryEntry[] {
     grouped.set(record.name, [...(grouped.get(record.name) ?? []), record]);
   return [...grouped]
     .map(([name, occurrences]) => {
+      const invocations = [
+        ...new Set(
+          occurrences.map((record) => record.metadata?.invocation ?? "unknown"),
+        ),
+      ];
       const owners = [...new Set(occurrences.map(ownershipLabel))];
       return {
         name,
+        invocation:
+          invocations.length === 1
+            ? invocations[0]!
+            : invocations.includes("unknown")
+              ? "partial"
+              : "mixed",
+        usedBy: [
+          ...new Set(
+            occurrences.flatMap(
+              (record) => record.usedBy?.map((usage) => usage.harness) ?? [],
+            ),
+          ),
+        ].sort(),
         occurrences,
         sources: [
           ...new Set(occurrences.map((x) => x.source ?? "Unknown source")),
@@ -87,4 +107,31 @@ export function observedLabel(value: string): string {
   return Number.isNaN(date.getTime())
     ? "Unknown"
     : `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+export function invocationLabel(value: string): string {
+  return (
+    (
+      {
+        manual: "Manual",
+        automatic: "Auto",
+        both: "Both",
+        disabled: "Disabled",
+        mixed: "Mixed",
+        partial: "Partial",
+        unknown: "?",
+      } as Record<string, string>
+    )[value] ?? "?"
+  );
+}
+export function harnessLabel(value: string, compact = false): string {
+  return (
+    (
+      {
+        codex: compact ? "OAI" : "OpenAI",
+        claude: compact ? "Cl" : "Claude",
+        pi: "Pi",
+      } as Record<string, string>
+    )[value] ?? safeText(value)
+  );
 }
