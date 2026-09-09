@@ -251,6 +251,15 @@ def exercise(executable, home, width, height):
         terminal.wait("initial populated library", lambda text: "alpha-review" in text and "bravo-writing" in text)
         assert terminal.screen.alternate, "Dashboard did not enter alternate screen"
         terminal.wait("raw input enabled", lambda _: not (termios.tcgetattr(terminal.slave)[3] & termios.ICANON))
+        terminal.send(b"\x1b[C", "right selects local machine", lambda text: "‹ PTY Mac ›" in text)
+        terminal.send(b"\x1b[D", "left returns all machines", lambda text: "‹ All machines ›" in text)
+        terminal.send(b"/", "search for cursor editing", lambda text: "Editing search" in text)
+        terminal.send(b"alha", "search text before insertion", lambda text: "alha▏" in text)
+        terminal.send(b"\x1b[D", "cursor moves left", lambda text: "alh▏a" in text)
+        terminal.send(b"\x1b[D", "cursor moves into word", lambda text: "al▏ha" in text)
+        terminal.send(b"p", "insert at cursor", lambda text: "alp▏ha" in text and "alpha-review" in text)
+        terminal.send(b"\x1b", "finish edited search", lambda text: "Search: alpha" in text and "‹ All machines ›" in text)
+        terminal.send(b"x", "reset edited search", lambda text: "bravo-writing" in text)
         # Search editing, results navigation, and full-page details have distinct focus.
         terminal.send(b"g", "global filter before search", lambda text: "· global ·" in text)
         terminal.send(b"/", "explicit search focus", lambda text: "Editing search" in text and "▏" in text)

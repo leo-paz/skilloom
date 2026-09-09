@@ -410,4 +410,56 @@ describe("full-screen skill library", () => {
     expect(app.lastFrame()).toContain("/workspace/catalog");
     expect(app.lastFrame()).toContain("/workspace/other");
   });
+  it("cycles machines both ways, retaining a selected skill or falling back to the first", async () => {
+    const app = mount();
+    await tick();
+    app.stdin.write("\u001b[B");
+    await tick();
+    expect(app.lastFrame()).toContain("› design-system");
+    app.stdin.write("\u001b[C");
+    await tick();
+    expect(app.lastFrame()).toContain("‹ Workstation ›");
+    expect(app.lastFrame()).toContain("› design-system");
+    app.stdin.write("\u001b[C");
+    await tick();
+    expect(app.lastFrame()).toContain("‹ Studio ›");
+    expect(app.lastFrame()).toContain("› remote-research");
+    app.stdin.write("\u001b[C");
+    await tick();
+    expect(app.lastFrame()).toContain("‹ All machines ›");
+    expect(app.lastFrame()).toContain("› remote-research");
+    app.stdin.write("\u001b[D");
+    await tick();
+    expect(app.lastFrame()).toContain("‹ Studio ›");
+    app.stdin.write("\r");
+    await tick();
+    app.stdin.write("\u001b[D");
+    await tick();
+    expect(app.lastFrame()).toContain("Studio");
+    expect(app.lastFrame()).toContain("Skill details");
+  });
+  it("uses horizontal arrows for cursor editing during search without switching machines", async () => {
+    const app = mount();
+    await tick();
+    app.stdin.write("/");
+    await tick();
+    app.stdin.write("co-review");
+    await tick();
+    for (let i = 0; i < 7; i++) {
+      app.stdin.write("\u001b[D");
+      await tick();
+    }
+    app.stdin.write("de");
+    await tick();
+    expect(app.lastFrame()).toContain("code▏-review");
+    expect(app.lastFrame()).toContain("All machines");
+    app.stdin.write("\u001b[C");
+    await tick();
+    app.stdin.write("\u007f");
+    await tick();
+    expect(app.lastFrame()).toContain("code▏review");
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("Search: codereview");
+  });
 });

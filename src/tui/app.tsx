@@ -322,6 +322,7 @@ export function SkilloomApp({
   const [inventory, setInventory] = useState(initialInventory);
   const [view, setView] = useState("Library");
   const [query, setQuery] = useState("");
+  const [searchCursor, setSearchCursor] = useState(0);
   const [searching, setSearching] = useState(false);
   const [machine, setMachine] = useState("all");
   const [scope, setScope] = useState("all");
@@ -401,7 +402,30 @@ export function SkilloomApp({
   }, [rows.length]);
   useEffect(() => {
     setIndex(0);
-  }, [query, machine, scope, ownership]);
+  }, [query, scope, ownership]);
+  const changeMachine = (direction: number) => {
+    if (!inventory) return;
+    const machines = [
+      "all",
+      ...new Set(inventory.machines.map((machine) => machine.id)),
+    ];
+    const current = Math.max(0, machines.indexOf(machine));
+    const next =
+      machines[(current + direction + machines.length) % machines.length]!;
+    const nextRows = filterLibrary(entries, {
+      query,
+      machine: next,
+      scope,
+      ownership,
+    });
+    setIndex(
+      Math.max(
+        0,
+        nextRows.findIndex((row) => row.name === selected?.name),
+      ),
+    );
+    setMachine(next);
+  };
   const narrow = size.width < 100;
   const tiny = size.width < 65;
   const bodyHeight = Math.max(5, size.height - 8);
@@ -829,9 +853,36 @@ export function SkilloomApp({
         if (key.upArrow) setIndex((current) => Math.max(0, current - 1));
         return;
       }
-      if (key.backspace || key.delete)
-        setQuery(Array.from(query).slice(0, -1).join(""));
-      else if (!key.ctrl && !key.meta) setQuery(query + safeText(input));
+      const characters = Array.from(query);
+      const cursor = Math.min(searchCursor, characters.length);
+      if (key.leftArrow) {
+        setSearchCursor(Math.max(0, cursor - 1));
+        return;
+      }
+      if (key.rightArrow) {
+        setSearchCursor(Math.min(characters.length, cursor + 1));
+        return;
+      }
+      if (key.home || (key.ctrl && input === "a")) {
+        setSearchCursor(0);
+        return;
+      }
+      if (key.end || (key.ctrl && input === "e")) {
+        setSearchCursor(characters.length);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        if (cursor > 0) {
+          characters.splice(cursor - 1, 1);
+          setQuery(characters.join(""));
+          setSearchCursor(cursor - 1);
+        }
+      } else if (!key.ctrl && !key.meta) {
+        const inserted = Array.from(safeText(input));
+        characters.splice(cursor, 0, ...inserted);
+        setQuery(characters.join(""));
+        setSearchCursor(cursor + inserted.length);
+      }
       return;
     }
     if (key.escape) {
@@ -849,6 +900,7 @@ export function SkilloomApp({
     if (input === "/") {
       setView("Library");
       setDetails(false);
+      setSearchCursor(Array.from(query).length);
       setSearching(true);
       return;
     }
@@ -917,10 +969,12 @@ export function SkilloomApp({
       return;
     }
     if (details && ["m", "g", "o", "x"].includes(input)) return;
-    if (input === "m") {
-      setMachine(
-        cycle(["all", ...inventory.machines.map((x) => x.id)], machine),
-      );
+    if (
+      view === "Library" &&
+      !details &&
+      (key.leftArrow || key.rightArrow || input === "m")
+    ) {
+      changeMachine(key.leftArrow ? -1 : 1);
       return;
     }
     if (input === "g") {
@@ -1051,9 +1105,9 @@ export function SkilloomApp({
         <Line bold>Keyboard guide</Line>
         {[
           "1 Library   2 Machines   3 Changes   4 Settings",
-          "/ Search   Enter/Esc Return to results, keeping your search",
+          "/ Search   ←/→ Edit text   Enter/Esc Results",
           "↑↓ or j/k Select   Details: i Show technical information",
-          "m Cycle machine   g Cycle global/project   o Cycle ownership",
+          "←/→ Change machine in Results   g Scope   o Ownership",
           "Enter Open skill details   Esc Return to results   x Clear filters",
           "r Refresh this machine and pull published observations",
           "s Preview local sync, then explicitly confirm to apply",
@@ -1392,13 +1446,22 @@ export function SkilloomApp({
             : searching
               ? "Editing search: "
               : "Search: "}
-          {!details && (query || (searching ? "" : "press /"))}
-          {searching ? "▏" : ""}
+          {!details &&
+            (searching
+              ? `${Array.from(query)
+                  .slice(
+                    Math.max(0, searchCursor - Math.max(5, size.width - 24)),
+                    searchCursor,
+                  )
+                  .join("")}▏${Array.from(query).slice(searchCursor).join("")}`
+              : query || "press /")}
         </Text>
       </Box>
       <Box paddingX={1} justifyContent="space-between">
         <Text wrap="truncate-end">
-          {safeText(selectedMachine)}
+          {view === "Library" && !details && !searching
+            ? `‹ ${safeText(selectedMachine)} ›`
+            : safeText(selectedMachine)}
           {scope === "all" ? "" : ` · ${scope}`}
           {ownership === "all" ? "" : ` · ${ownership}`} · {rows.length} skills
         </Text>
@@ -1443,7 +1506,7 @@ export function SkilloomApp({
         !help &&
         view === "Library" && (
           <Box paddingX={1}>
-            <KeyHint k="m">machine</KeyHint>
+            <KeyHint k="←/→">machine</KeyHint>
             <KeyHint k="g">scope</KeyHint>
             <KeyHint k="o">ownership</KeyHint>
             <KeyHint k="x">clear filters</KeyHint>

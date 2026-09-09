@@ -38,10 +38,11 @@ The Library combines global and project skills across local checkouts and publis
 | `1`–`4` or `Tab` | Switch between Library, Machines, Changes, and Settings |
 | `/` | Search the library |
 | `↑` / `↓` or `j` / `k` | Select a skill |
+| `←` / `→` | Cycle machines in Results; move the cursor while editing search |
 | `Enter` | Finish searching, or open the selected skill from Results |
 | `Esc` | Finish searching or return from details; keep search, filters and selection |
 | `i` | Show or hide technical information in skill details |
-| `m`, `g`, `o` | Cycle machine, scope, and ownership filters outside Settings |
+| `m`, `g`, `o` | Cycle machine, scope, and ownership filters in Results |
 | `x` | Clear filters |
 | `r` | Refresh local inventory with scan progress |
 | `s` | Scan and review a fresh sync plan |
