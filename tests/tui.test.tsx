@@ -64,7 +64,7 @@ describe("full-screen skill library", () => {
     await tick();
     expect(app.lastFrame()).toContain("remote-research");
     expect(app.lastFrame()).toContain("Studio");
-    expect(app.lastFrame()).toContain("Last observed");
+    expect(app.lastFrame()).toContain("Saved observations");
     expect(app.lastFrame()).not.toContain("/workspace/catalog");
   });
   it("provides a usable compact list and an inspect/back flow", async () => {
@@ -333,5 +333,81 @@ describe("full-screen skill library", () => {
     expect(app.lastFrame()).toContain("Field 4 of 4");
     expect(app.lastFrame()).toContain("Global · personal");
     expect(app.lastFrame()).toContain("Esc cancel");
+  });
+  it("returns search to visibly active results and preserves filters across Escape", async () => {
+    const app = mount();
+    await tick();
+    app.stdin.write("/");
+    await tick();
+    app.stdin.write("review");
+    await tick();
+    expect(app.lastFrame()).toContain("Editing search");
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("Results");
+    expect(app.lastFrame()).not.toContain("Editing search");
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("1 skills");
+    expect(app.lastFrame()).not.toContain("design-system");
+    app.stdin.write("\r");
+    await tick();
+    expect(app.lastFrame()).toContain("Skill details");
+    expect(app.lastFrame()).not.toContain("Ownership");
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("Results");
+    expect(app.lastFrame()).toContain("1 skills");
+  });
+  it("exits details before starting another search and hides technical metadata by default", async () => {
+    const app = mount();
+    await tick();
+    app.stdin.write("\r");
+    await tick();
+    expect(app.lastFrame()).toContain("Skill details");
+    expect(app.lastFrame()).not.toContain("Last observed");
+    app.stdin.write("i");
+    await tick();
+    expect(app.lastFrame()).toContain("Last observed");
+    app.stdin.write("/");
+    await tick();
+    app.stdin.write("design");
+    await tick();
+    app.stdin.write("\u001b[B");
+    await tick();
+    expect(app.lastFrame()).toContain("Results");
+    expect(app.lastFrame()).not.toContain("Skill details");
+    expect(app.lastFrame()).not.toContain("Editing search");
+  });
+  it("groups identical checkout facts while retaining individual paths on demand", async () => {
+    const inventory = inventoryFixture();
+    inventory.projects[0]!.checkouts.push({
+      path: "/workspace/other",
+      skills: structuredClone(inventory.projects[0]!.checkouts[0]!.skills!),
+    });
+    const app = render(
+      <SkilloomApp
+        initialInventory={inventory}
+        backend={backend()}
+        width={120}
+        height={36}
+      />,
+    );
+    mounted.push(app);
+    await tick();
+    app.stdin.write("/");
+    await tick();
+    app.stdin.write("design");
+    await tick();
+    app.stdin.write("\r");
+    await tick();
+    app.stdin.write("\r");
+    await tick();
+    expect(app.lastFrame()).toContain("catalog (2 locations)");
+    expect(app.lastFrame()).not.toContain("/workspace/");
+    app.stdin.write("i");
+    await tick();
+    expect(app.lastFrame()).toContain("/workspace/catalog");
+    expect(app.lastFrame()).toContain("/workspace/other");
   });
 });

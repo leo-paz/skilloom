@@ -251,13 +251,33 @@ def exercise(executable, home, width, height):
         terminal.wait("initial populated library", lambda text: "alpha-review" in text and "bravo-writing" in text)
         assert terminal.screen.alternate, "Dashboard did not enter alternate screen"
         terminal.wait("raw input enabled", lambda _: not (termios.tcgetattr(terminal.slave)[3] & termios.ICANON))
-        terminal.send(b"/", "search field", lambda text: "▏" in text)
+        # Search editing, results navigation, and full-page details have distinct focus.
+        terminal.send(b"g", "global filter before search", lambda text: "· global ·" in text)
+        terminal.send(b"/", "explicit search focus", lambda text: "Editing search" in text and "▏" in text)
         terminal.send(b"bravo", "filtered library", lambda text: "bravo-writing" in text and "alpha-review" not in text)
-        terminal.send(b"\r", "search committed", lambda text: "▏" not in text)
-        terminal.send(b"\r", "skill inspector", lambda text: "Source" in text and "acme/skills" in text)
-        terminal.send(b"\x1b", "back to library", lambda text: "Skill" in text and "bravo-writing" in text)
-        terminal.send(b"x", "clear search", lambda text: "alpha-review" in text)
-        terminal.send(b"g", "global scope filter", lambda text: "global · all" in text and "delta-project" not in text)
+        terminal.send(b"\x1b", "search Escape focuses results without clearing", lambda text: "Results" in text and "Editing search" not in text and "▏" not in text and "bravo-writing" in text and "alpha-review" not in text and "· global ·" in text)
+        terminal.send(b"\x1b", "second results Escape preserves query and scope", lambda text: "Results" in text and "bravo-writing" in text and "alpha-review" not in text and "· global ·" in text)
+        if width >= 100:
+            assert "Preview" in terminal.screen.text(), "Wide results lack their read-only preview cue"
+            assert "Enter focus inspector" not in terminal.screen.text(), "Preview still exposes an independent focus mode"
+        terminal.send(b"\r", "full-page details at every width", lambda text: "Skill details" in text and "bravo-writing" in text and "Esc results" in text)
+        assert "Preview" not in terminal.screen.text(), "Details left the preview pane visible"
+        assert "Ownership" not in terminal.screen.text(), "Details left the library table visible"
+        assert "Last observed" not in terminal.screen.text(), "Technical metadata is expanded by default"
+        terminal.send(b"i", "explicit technical metadata", lambda text: "Last observed" in text)
+        terminal.send(b"/", "search from details returns to results", lambda text: "Editing search" in text and "Results" in text and "Skill details" not in text and "bravo-writing" in text)
+        terminal.send(b"\r", "search Enter focuses preserved results", lambda text: "Editing search" not in text and "▏" not in text and "Results" in text and "bravo-writing" in text and "· global ·" in text)
+        terminal.send(b"\r", "reopen explicit details", lambda text: "Skill details" in text and "bravo-writing" in text)
+        terminal.send(b"\x1b", "details Escape returns same results", lambda text: "Skill details" not in text and "Results" in text and "bravo-writing" in text and "alpha-review" not in text and "· global ·" in text)
+        terminal.send(b"\x1b", "second Escape keeps filtered results", lambda text: "Results" in text and "bravo-writing" in text and "alpha-review" not in text and "· global ·" in text)
+        terminal.send(b"x", "clear search explicitly", lambda text: "alpha-review" in text)
+        terminal.send(b"/", "multi-result search", lambda text: "Editing search" in text)
+        terminal.send(b"skill-", "multiple filtered results", lambda text: "skill-00" in text and "skill-01" in text)
+        terminal.send(b"\x1b[B", "Down ends search and selects next result", lambda text: "Editing search" not in text and "▏" not in text and re.search(r"›\s+skill-01", text) is not None)
+        terminal.send(b"\r", "selected result opens full details", lambda text: "Skill details" in text and "skill-01" in text)
+        terminal.send(b"\x1b", "return preserves selected result", lambda text: "Results" in text and "Skill details" not in text and re.search(r"›\s+skill-01", text) is not None)
+        terminal.send(b"x", "clear multi-result query", lambda text: "alpha-review" in text)
+        terminal.send(b"g", "global scope filter", lambda text: "· global ·" in text and "delta-project" not in text)
         terminal.send(b"g", "project scope filter", lambda text: "delta-project" in text and "alpha-review" not in text)
         terminal.send(b"x", "clear scope filter", lambda text: "alpha-review" in text)
         terminal.send(b"o", "managed ownership filter", lambda text: "alpha-review" in text and "bravo-writing" not in text)
@@ -281,7 +301,7 @@ def exercise(executable, home, width, height):
     finally:
         interrupt.close()
     assert not (home / "upstream-called").exists(), "Cached browsing unexpectedly invoked upstream"
-    print(f"PTY {Path(executable).name} {width}x{height}: library, search, inspect, views, resize, q/Ctrl-C restoration passed")
+    print(f"PTY {Path(executable).name} {width}x{height}: library, search focus/Esc/arrows, full-page details/back, explicit metadata, views, resize, q/Ctrl-C restoration passed")
 
 
 def main():

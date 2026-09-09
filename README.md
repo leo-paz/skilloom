@@ -31,14 +31,16 @@ The bare command or `skilloom tui` opens the Ink interface in the terminal's alt
 
 ## Browse the skill library
 
-The Library combines global and project skills across local checkouts and published remote observations. Select a skill to see its sources, agents, ownership, requirements, and last observation time. Different sources and ownership remain distinct between independent clones. Unknown sources remain visible.
+The Library combines global and project skills across local checkouts and published remote observations. The list is always the active control while browsing. Its read-only preview summarizes the selected skill by source, ownership and machine. Enter opens a separate full-width details view; repeated installations with the same facts are grouped. Press `i` there for individual checkout paths, full agent coverage and observation timestamps. Different sources and ownership remain distinct between independent clones. Unknown sources remain visible.
 
 | Key | Action |
 | --- | --- |
 | `1`–`4` or `Tab` | Switch between Library, Machines, Changes, and Settings |
 | `/` | Search the library |
 | `↑` / `↓` or `j` / `k` | Select a skill |
-| `Enter` | Open or close details, including the detail view in narrow terminals |
+| `Enter` | Finish searching, or open the selected skill from Results |
+| `Esc` | Finish searching or return from details; keep search, filters and selection |
+| `i` | Show or hide technical information in skill details |
 | `m`, `g`, `o` | Cycle machine, scope, and ownership filters outside Settings |
 | `x` | Clear filters |
 | `r` | Refresh local inventory with scan progress |

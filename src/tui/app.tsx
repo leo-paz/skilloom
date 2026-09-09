@@ -119,83 +119,178 @@ function wrapLines(lines: DetailLine[], width: number): DetailLine[] {
       .map((text) => ({ ...line, text })),
   );
 }
-function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
+function inspectorLines(
+  entry: LibraryEntry,
+  width: number,
+  technical = false,
+): DetailLine[] {
   const content: DetailLine[] = [
+    { text: "Skill details", tone: color.accent },
     { text: entry.name, bold: true },
     {
-      text: `${entry.machines.length} machine${entry.machines.length === 1 ? "" : "s"} · ${entry.occurrences.length} location${entry.occurrences.length === 1 ? "" : "s"}`,
+      text: `${entry.machines.length} machine${entry.machines.length === 1 ? "" : "s"}, ${entry.occurrences.length} location${entry.occurrences.length === 1 ? "" : "s"}`,
       tone: color.muted,
     },
   ];
-  if (entry.sources.length > 1)
-    content.push({
-      text: "Sources differ between locations",
-      tone: color.warning,
-    });
-  for (const record of entry.occurrences) {
+  if (entry.sources.length === 1)
+    content.push({ text: `Source: ${entry.sources[0]}`, tone: color.muted });
+  else content.push({ text: "Sources vary by location", tone: color.warning });
+  const groups = new Map<
+    string,
+    { record: LibraryEntry["occurrences"][number]; count: number }
+  >();
+  for (const [index, record] of entry.occurrences.entries()) {
+    const key = technical
+      ? String(index)
+      : JSON.stringify([
+          record.machine.id,
+          record.projectId,
+          record.source,
+          record.agents,
+          record.detectedAgents,
+          record.ownership,
+          record.managed,
+          record.installed,
+          record.desired,
+          record.conflict,
+        ]);
+    const group = groups.get(key);
+    if (group) group.count++;
+    else groups.set(key, { record, count: 1 });
+  }
+  if (entry.occurrences.some((record) => record.stale))
+    content.push({ text: "Saved observations included", tone: color.muted });
+  for (const { record, count } of groups.values()) {
+    const owner = ownershipLabel(record);
+    const detected = record.detectedAgents ?? record.agents;
+    const agents = technical
+      ? record.agents.join(", ")
+      : detected.slice(0, 3).join(", ") +
+        (detected.length > 3 ? ` +${detected.length - 3} more` : "");
     content.push(
       { text: " " },
       {
-        text: `${record.machine.name} · ${record.scope === "global" ? "Global" : record.projectName}`,
+        text: `${record.machine.name} / ${record.scope === "global" ? "Global" : record.projectName}${count > 1 ? ` (${count} locations)` : ""}`,
         bold: true,
       },
       {
-        text: `${record.installed ? "Installed" : "Missing"} · ${ownershipLabel(record)}${record.desired ? " · Required" : ""}`,
-        tone: color.muted,
+        text: `${record.installed ? "Installed" : "Missing"} · ${owner === "Managed" ? "Managed by Skilloom" : owner}${record.desired ? " · Required" : ""}`,
+        tone: record.installed ? color.muted : color.warning,
       },
-      {
-        text: `Source: ${record.source ?? "Unknown source"}`,
-        tone: record.source ? color.good : color.warning,
-      },
-      { text: `Agents: ${record.agents.join(", ") || "Unknown"}` },
     );
-    if (record.detectedAgents)
+    if (entry.sources.length > 1)
       content.push({
-        text: `Detected: ${record.detectedAgents.join(", ")}`,
-        tone: color.muted,
-      });
-    if (record.checkoutPath)
-      content.push({ text: record.checkoutPath, tone: color.muted });
-    else if (record.checkoutId)
-      content.push({
-        text: `Checkout: ${record.checkoutId}`,
+        text: `Source: ${record.source ?? "Unknown"}`,
         tone: color.muted,
       });
     content.push({
-      text: `Last observed ${observedLabel(record.observedAt)}`,
+      text: `${technical ? "Available to" : "Agents"}: ${agents || "Unknown"}`,
       tone: color.muted,
     });
-    if (record.stale)
+    if (technical) {
+      if (record.detectedAgents)
+        content.push({
+          text: `Detected here: ${record.detectedAgents.join(", ")}`,
+          tone: color.muted,
+        });
+      if (record.checkoutPath)
+        content.push({
+          text: `Path: ${record.checkoutPath}`,
+          tone: color.muted,
+        });
+      else if (record.checkoutId)
+        content.push({
+          text: `Checkout ID: ${record.checkoutId}`,
+          tone: color.muted,
+        });
       content.push({
-        text: "Saved observation; refresh on that machine",
-        tone: color.warning,
+        text: `Last observed ${observedLabel(record.observedAt)}`,
+        tone: color.muted,
       });
+    }
     if (record.conflict)
       content.push({ text: record.conflict, tone: color.error });
   }
-  if (entry.occurrences.every((x) => x.ownership === "repository"))
-    content.push({
-      text: "Git manages these files. Skilloom observes them.",
-      tone: color.muted,
-    });
   return wrapLines(content, width - 2);
+}
+function Preview({
+  entry,
+  lines,
+  width,
+}: {
+  entry: LibraryEntry | undefined;
+  lines: number;
+  width: number;
+}) {
+  if (!entry)
+    return (
+      <Box paddingX={1}>
+        <Text dimColor>No skill selected.</Text>
+      </Box>
+    );
+  const machines = new Map<string, number>();
+  for (const record of entry.occurrences)
+    machines.set(
+      record.machine.name,
+      (machines.get(record.machine.name) ?? 0) + 1,
+    );
+  const content: DetailLine[] = [
+    { text: "Preview", tone: color.muted },
+    ...(entry.occurrences.some((record) => record.stale)
+      ? [{ text: "Saved observations", tone: color.muted }]
+      : []),
+    { text: entry.name, bold: true },
+    { text: " " },
+    {
+      text:
+        entry.sources.length === 1
+          ? entry.sources[0]!
+          : `${entry.sources.length} sources across locations`,
+      tone: color.muted,
+    },
+    {
+      text:
+        entry.ownership === "Managed" ? "Managed by Skilloom" : entry.ownership,
+      tone: color.muted,
+    },
+    { text: " " },
+    ...[...machines].slice(0, 4).map(([name, count]) => ({
+      text: `${name}  ${count} location${count === 1 ? "" : "s"}`,
+    })),
+    ...(machines.size > 4
+      ? [{ text: `+${machines.size - 4} more machines`, tone: color.muted }]
+      : []),
+  ];
+  return (
+    <Box flexDirection="column" paddingX={1}>
+      {wrapLines(content, width - 2)
+        .slice(0, Math.max(1, lines - 2))
+        .map((line, i) => (
+          <Line key={i} tone={line.tone} bold={line.bold}>
+            {line.text}
+          </Line>
+        ))}
+      <Text> </Text>
+      <Line tone={color.accent}>Enter opens skill details</Line>
+    </Box>
+  );
 }
 function Inspector({
   entry,
   lines,
   width,
   offset,
-  focused,
+  technical,
 }: {
   entry: LibraryEntry | undefined;
   lines: number;
   width: number;
   offset: number;
-  focused: boolean;
+  technical: boolean;
 }) {
   if (!entry)
     return <Text dimColor>Select a skill to inspect its installations.</Text>;
-  const wrapped = inspectorLines(entry, width);
+  const wrapped = inspectorLines(entry, width, technical);
   const page = Math.max(1, lines - 1);
   const start = Math.min(offset, Math.max(0, wrapped.length - page));
   return (
@@ -206,8 +301,8 @@ function Inspector({
         </Line>
       ))}
       <Line tone={color.accent}>
-        {focused ? "↑↓ scroll · Esc back" : "Enter focus inspector"} {start + 1}
-        –{Math.min(start + page, wrapped.length)}/{wrapped.length}
+        {technical ? "Technical details" : "Overview"} · {start + 1}–
+        {Math.min(start + page, wrapped.length)}/{wrapped.length}
       </Line>
     </Box>
   );
@@ -233,6 +328,7 @@ export function SkilloomApp({
   const [ownership, setOwnership] = useState("all");
   const [index, setIndex] = useState(0);
   const [details, setDetails] = useState(false);
+  const [technical, setTechnical] = useState(false);
   const [detailOffset, setDetailOffset] = useState(0);
   const [viewOffset, setViewOffset] = useState(0);
   const [outcome, setOutcome] = useState<string[]>();
@@ -309,7 +405,7 @@ export function SkilloomApp({
   const narrow = size.width < 100;
   const tiny = size.width < 65;
   const bodyHeight = Math.max(5, size.height - 8);
-  const pageSize = Math.max(1, bodyHeight - 3);
+  const pageSize = Math.max(1, bodyHeight - 4);
   useEffect(() => {
     setDetailOffset(0);
   }, [selected?.name]);
@@ -723,8 +819,14 @@ export function SkilloomApp({
       return;
     }
     if (searching) {
-      if (key.escape || key.return) {
+      if (key.escape || key.return || key.downArrow || key.upArrow) {
         setSearching(false);
+        setDetails(false);
+        if (key.downArrow)
+          setIndex((current) =>
+            Math.min(Math.max(0, rows.length - 1), current + 1),
+          );
+        if (key.upArrow) setIndex((current) => Math.max(0, current - 1));
         return;
       }
       if (key.backspace || key.delete)
@@ -734,12 +836,6 @@ export function SkilloomApp({
     }
     if (key.escape) {
       if (details) setDetails(false);
-      else {
-        setQuery("");
-        setMachine("all");
-        setScope("all");
-        setOwnership("all");
-      }
       return;
     }
     if (input === "q") {
@@ -752,6 +848,7 @@ export function SkilloomApp({
     }
     if (input === "/") {
       setView("Library");
+      setDetails(false);
       setSearching(true);
       return;
     }
@@ -819,6 +916,7 @@ export function SkilloomApp({
         });
       return;
     }
+    if (details && ["m", "g", "o", "x"].includes(input)) return;
     if (input === "m") {
       setMachine(
         cycle(["all", ...inventory.machines.map((x) => x.id)], machine),
@@ -852,8 +950,14 @@ export function SkilloomApp({
       sourceForm();
       return;
     }
-    if (key.return && view === "Library") {
-      setDetails(!details);
+    if (details && input === "i") {
+      setTechnical(!technical);
+      setDetailOffset(0);
+      return;
+    }
+    if (key.return && view === "Library" && !details && selected) {
+      setDetails(true);
+      setTechnical(false);
       setDetailOffset(0);
       return;
     }
@@ -863,14 +967,9 @@ export function SkilloomApp({
         ? Math.max(
             0,
             (selected
-              ? inspectorLines(
-                  selected,
-                  narrow
-                    ? size.width
-                    : Math.max(30, Math.floor((size.width - 21) * 0.48)) - 2,
-                ).length
+              ? inspectorLines(selected, size.width, technical).length
               : 0) -
-              (bodyHeight - (narrow ? 1 : 3)),
+              (bodyHeight - 1),
           )
         : Math.max(
             0,
@@ -918,11 +1017,15 @@ export function SkilloomApp({
         : "Tab next · Ctrl-U clear · Enter save · Esc cancel"
       : review
         ? "↑↓ review · y Apply · Esc cancel"
-        : details
-          ? "↑↓ scroll · Esc back · q quit"
-          : tiny
-            ? "/ find · Enter view · ? help · q quit"
-            : "/ search   m machine   g scope   o ownership   Enter inspect   ? help   q quit";
+        : searching
+          ? "Enter/Esc results · ↑↓ select"
+          : details
+            ? tiny
+              ? "Esc results · i more · ↑↓ scroll"
+              : `Esc results · ↑↓ scroll · i ${technical ? "hide technical details" : "technical details"}`
+            : tiny
+              ? "↑↓ select · Enter open · / search · ?"
+              : "↑↓ select   Enter open   / search   ? help   q quit";
   let content: React.ReactNode;
   if (outcome) {
     const lines = wrapLines(
@@ -948,10 +1051,10 @@ export function SkilloomApp({
         <Line bold>Keyboard guide</Line>
         {[
           "1 Library   2 Machines   3 Changes   4 Settings",
-          "/ Search names, repositories, sources, and agents",
-          "↑↓ or j/k Select   Page Up/Down Scroll   Home/End Jump",
+          "/ Search   Enter/Esc Return to results, keeping your search",
+          "↑↓ or j/k Select   Details: i Show technical information",
           "m Cycle machine   g Cycle global/project   o Cycle ownership",
-          "Enter Inspect   Esc Back or clear filters   x Reset filters",
+          "Enter Open skill details   Esc Return to results   x Clear filters",
           "r Refresh this machine and pull published observations",
           "s Preview local sync, then explicitly confirm to apply",
           "a Add requirement   d Remove requirement   v Verify source",
@@ -1162,60 +1265,30 @@ export function SkilloomApp({
         )}
       </Box>
     );
-  else if (details && narrow)
+  else if (details)
     content = (
       <Inspector
         entry={selected}
         lines={bodyHeight}
         width={size.width}
         offset={detailOffset}
-        focused={details}
+        technical={technical}
       />
     );
   else
     content = (
       <Box flexDirection="row" flexGrow={1}>
-        {!narrow && (
-          <Box
-            width={21}
-            flexDirection="column"
-            borderStyle="single"
-            borderColor={color.muted}
-            paddingX={1}
-          >
-            <Line bold>Machines</Line>
-            <Text> </Text>
-            {[{ id: "all", name: "All machines" }, ...inventory.machines]
-              .slice(0, bodyHeight - 8)
-              .map((m) => (
-                <Line
-                  key={m.id}
-                  tone={machine === m.id ? color.accent : undefined}
-                  bold={machine === m.id}
-                >
-                  {machine === m.id ? "› " : "  "}
-                  {safeText(m.name)}
-                </Line>
-              ))}
-            <Text> </Text>
-            <Line tone={color.muted}>m change machine</Line>
-            <Line tone={color.muted}>
-              {inventory.discovery.excludedWorktrees ?? 0} excluded
-            </Line>
-          </Box>
-        )}
         <Box
           flexDirection="column"
           flexGrow={1}
-          width={
-            narrow
-              ? size.width
-              : Math.max(35, Math.floor((size.width - 21) * 0.52))
-          }
+          width={narrow ? size.width : Math.floor(size.width * 0.6)}
           borderStyle="single"
-          borderColor={color.muted}
+          borderColor={searching ? color.muted : color.accent}
           paddingX={1}
         >
+          <Line tone={searching ? color.muted : color.accent} bold>
+            Results{searching ? "" : " · ↑↓ select"}
+          </Line>
           <Box>
             <Box flexGrow={1}>
               <Text bold>Skill</Text>
@@ -1270,16 +1343,14 @@ export function SkilloomApp({
         </Box>
         {!narrow && (
           <Box
-            width={Math.max(30, Math.floor((size.width - 21) * 0.48))}
+            width={Math.floor(size.width * 0.4)}
             borderStyle="single"
             borderColor={color.muted}
           >
-            <Inspector
+            <Preview
               entry={selected}
               lines={bodyHeight - 2}
-              width={Math.max(30, Math.floor((size.width - 21) * 0.48)) - 2}
-              offset={detailOffset}
-              focused={details}
+              width={Math.floor(size.width * 0.4) - 2}
             />
           </Box>
         )}
@@ -1316,16 +1387,20 @@ export function SkilloomApp({
           wrap="truncate-end"
           color={searching ? color.accent : color.muted}
         >
-          /{" "}
-          {query ||
-            (searching ? "" : "Search skills, sources, projects, agents")}
+          {details
+            ? "Esc returns to your results"
+            : searching
+              ? "Editing search: "
+              : "Search: "}
+          {!details && (query || (searching ? "" : "press /"))}
           {searching ? "▏" : ""}
         </Text>
       </Box>
       <Box paddingX={1} justifyContent="space-between">
         <Text wrap="truncate-end">
-          {safeText(selectedMachine)} · {scope} · {ownership} · {rows.length}{" "}
-          skills
+          {safeText(selectedMachine)}
+          {scope === "all" ? "" : ` · ${scope}`}
+          {ownership === "all" ? "" : ` · ${ownership}`} · {rows.length} skills
         </Text>
         {!tiny && (
           <Text dimColor>
@@ -1359,15 +1434,22 @@ export function SkilloomApp({
           {footer}
         </Text>
       </Box>
-      {!tiny && (
-        <Box paddingX={1}>
-          <KeyHint k="s">review sync</KeyHint>
-          <KeyHint k="a">add</KeyHint>
-          <KeyHint k="d">remove requirement</KeyHint>
-          <KeyHint k="v">verify source</KeyHint>
-          <KeyHint k="r">refresh</KeyHint>
-        </Box>
-      )}
+      {!tiny &&
+        !details &&
+        !searching &&
+        !form &&
+        !review &&
+        !outcome &&
+        !help &&
+        view === "Library" && (
+          <Box paddingX={1}>
+            <KeyHint k="m">machine</KeyHint>
+            <KeyHint k="g">scope</KeyHint>
+            <KeyHint k="o">ownership</KeyHint>
+            <KeyHint k="x">clear filters</KeyHint>
+            <KeyHint k="s">review sync</KeyHint>
+          </Box>
+        )}
     </Box>
   );
 }
