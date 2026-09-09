@@ -1,0 +1,88 @@
+import type { MachineInventory } from "../src/core/types.js";
+export const inventoryFixture = (): MachineInventory => ({
+  version: 1,
+  observedAt: "2026-09-08T12:00:00.000Z",
+  machine: { id: "local", name: "Workstation", profile: "personal" },
+  discovery: {
+    status: "found",
+    roots: [{ path: "/workspace", depth: 3, status: "scanned" }],
+    projectsFound: 1,
+    checkoutsFound: 1,
+  },
+  profiles: ["personal", "studio"],
+  machines: [
+    { id: "local", name: "Workstation", profile: "personal", local: true },
+    {
+      id: "remote",
+      name: "Studio",
+      profile: "studio",
+      observedAt: "2026-09-07T12:00:00.000Z",
+    },
+  ],
+  globalSkills: [
+    {
+      name: "code-review",
+      source: "acme/review",
+      agents: ["codex"],
+      scope: "global",
+      installed: true,
+      desired: true,
+      managed: true,
+      ownership: "personal",
+      reasons: ["machine profile personal"],
+    },
+  ],
+  projects: [
+    {
+      id: "github.com/acme/catalog",
+      name: "catalog",
+      remote: "https://github.com/acme/catalog",
+      checkouts: [
+        {
+          path: "/workspace/catalog",
+          skills: [
+            {
+              name: "design-system",
+              source: null,
+              agents: ["claude-code"],
+              scope: "project",
+              installed: true,
+              desired: false,
+              managed: false,
+              ownership: "repository",
+              reasons: [],
+            },
+          ],
+        },
+      ],
+      skills: [],
+      operations: [],
+    },
+  ],
+  operations: [],
+  remoteObservations: [
+    {
+      machine: { id: "remote", name: "Studio" },
+      observedAt: "2026-09-07T12:00:00.000Z",
+      projects: [
+        {
+          id: "github.com/acme/catalog",
+          name: "catalog",
+          skills: [
+            {
+              name: "remote-research",
+              source: "acme/research",
+              agents: ["codex"],
+              scope: "project",
+              installed: true,
+              desired: false,
+              managed: false,
+              ownership: "personal",
+              reasons: [],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+});

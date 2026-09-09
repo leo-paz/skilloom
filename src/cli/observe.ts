@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
@@ -17,11 +18,18 @@ function comparable(inventory: MachineInventory): string {
   return JSON.stringify({
     ...inventory,
     observedAt: "",
-    machines: inventory.machines.map((machine) => ({
-      ...machine,
-      observedAt: machine.local ? "" : machine.observedAt,
-    })),
+    machines: inventory.machines
+      .filter((machine) => machine.local)
+      .map((machine) => ({ ...machine, observedAt: "" })),
   });
+}
+
+function comparablePublished(content: string): string {
+  try {
+    return JSON.stringify({ ...JSON.parse(content), observedAt: "" });
+  } catch {
+    return content;
+  }
 }
 
 function publishedObservation(
@@ -69,6 +77,21 @@ function publishedObservation(
       name: project.name,
       remote: publicSource(project.remote),
       checkoutCount: project.checkouts.length,
+      ...(project.checkouts.every((checkout) => checkout.skills !== undefined)
+        ? {
+            checkouts: project.checkouts.map((checkout) => ({
+              id: createHash("sha256")
+                .update(
+                  `${inventory.machine.id}\0${project.id}\0${checkout.path}`,
+                )
+                .digest("hex")
+                .slice(0, 20),
+              skills: checkout.skills!.map(publicSkill),
+              ...(checkout.branch ? { branch: checkout.branch } : {}),
+              ...(checkout.commit ? { commit: checkout.commit } : {}),
+            })),
+          }
+        : {}),
       skills: project.skills.map(publicSkill),
       operations: project.operations.map(publicOperation),
     })),
@@ -91,8 +114,9 @@ export async function observeMachine(
     currentInventory ?? (await loadCurrentInventory(runtime, explicitConfig));
   const previous = await loadInventorySnapshot(paths.inventoryPath);
   const changed = !previous || comparable(previous) !== comparable(current);
-  if (changed) await saveInventorySnapshot(paths.inventoryPath, current);
-  else if (previous) current.observedAt = previous.observedAt;
+  if (!changed && previous) current.observedAt = previous.observedAt;
+  // Refresh remote metadata in the local cache without republishing local status.
+  await saveInventorySnapshot(paths.inventoryPath, current);
 
   let published = false;
   if (args.includes("--publish")) {
@@ -110,13 +134,16 @@ export async function observeMachine(
     const existing = existsSync(observationPath)
       ? await readFile(observationPath, "utf8")
       : undefined;
-    if (existing !== content) {
+    if (
+      !existing ||
+      comparablePublished(existing) !== comparablePublished(content)
+    ) {
       await mkdir(dirname(observationPath), { recursive: true });
       await writeFile(observationPath, content, { mode: 0o600 });
-      await new GitAdapter().commitAndPush(
+      await new GitAdapter().commitObservationAndPush(
         checkout,
         `Observe ${current.machine.name}`,
-        [relative(checkout, observationPath)],
+        relative(checkout, observationPath),
       );
       published = true;
     }

@@ -82,7 +82,6 @@ export async function initializeConfiguration(
           throw new Error("external storage requires --path");
         })(),
     );
-    await writeLocator(basePaths.locatorPath, configPath);
   }
   if (storage === "managed") {
     repository = option(args, "--repository");
@@ -92,7 +91,6 @@ export async function initializeConfiguration(
     if (!existingManagedCheckout)
       await new GitAdapter().clone(repository, checkout);
     configPath = join(checkout, "config.yaml");
-    await writeLocator(basePaths.locatorPath, configPath);
   }
   const machineId = await ensureMachineId(basePaths.machineIdPath);
   if (existsSync(configPath) && !flag(args, "--force")) {
@@ -102,7 +100,17 @@ export async function initializeConfiguration(
       await new GitAdapter().pull(dirname(configPath));
     }
     const existing = await loadUserConfig(configPath);
+    const preservedProfile = option(args, "--preserve-global-profile");
+    if (preservedProfile) {
+      requireIdentifier(preservedProfile, "profile name");
+      if (existing.profiles[preservedProfile])
+        throw new Error(
+          `profile ${preservedProfile} already exists; choose a new machine profile name`,
+        );
+      existing.profiles[preservedProfile] = { skills: [] };
+    }
     const profile =
+      preservedProfile ||
       option(args, "--profile") ||
       (existing.profiles.default
         ? "default"
@@ -116,6 +124,7 @@ export async function initializeConfiguration(
     };
     existing.machines[machineId] = { profile };
     await saveUserConfig(configPath, existing);
+    await writeLocator(basePaths.locatorPath, configPath);
     if (storage === "managed") {
       await new GitAdapter().commitAndPush(
         dirname(configPath),
@@ -142,7 +151,19 @@ export async function initializeConfiguration(
     projectProfiles: {},
     projects: {},
   };
+  const preservedProfile = option(args, "--preserve-global-profile");
+  if (preservedProfile) {
+    requireIdentifier(preservedProfile, "profile name");
+    if (config.profiles[preservedProfile])
+      throw new Error(
+        `profile ${preservedProfile} already exists; choose a new machine profile name`,
+      );
+    config.profiles[preservedProfile] = { skills: [] };
+    config.machines[machineId] = { profile: preservedProfile };
+  }
   await saveUserConfig(configPath, config);
+  if (storage !== "local")
+    await writeLocator(basePaths.locatorPath, configPath);
   if (storage === "managed")
     await new GitAdapter().commitAndPush(
       dirname(configPath),
@@ -242,7 +263,12 @@ export async function configureProfiles(
     const name = requireIdentifier(addProfile, "profile name");
     if (config.profiles[name])
       throw new Error(`profile ${name} already exists`);
-    config.profiles[name] = { skills: [] };
+    const copyProfile = option(args, "--copy-profile");
+    if (copyProfile && !config.profiles[copyProfile])
+      throw new Error(`profile ${copyProfile} does not exist`);
+    config.profiles[name] = copyProfile
+      ? structuredClone(config.profiles[copyProfile]!)
+      : { skills: [] };
   }
   if (removeProfile) {
     const name = requireIdentifier(removeProfile, "profile name");
@@ -298,7 +324,7 @@ export async function configureProfiles(
   if (profile) {
     if (!config.profiles[profile])
       throw new Error(`profile ${profile} does not exist`);
-    config.machines[machineId] = { profile };
+    config.machines[machineId] = { ...config.machines[machineId], profile };
   }
   if (profile || addProfile || removeProfile || addSkill || removeSkill) {
     await saveUserConfig(paths.configPath, config);

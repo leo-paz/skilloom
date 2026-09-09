@@ -5,7 +5,7 @@ import {
   protectRepositorySkills,
 } from "../adapters/project.js";
 import {
-  commandForOperation,
+  portableCommandForOperation,
   redactProcessOutput,
   SkillsAdapter,
 } from "../adapters/skills.js";
@@ -18,6 +18,8 @@ import {
   resolveConfigPaths,
   saveManagedState,
 } from "../core/config.js";
+import { localProjectId, normalizeRemote } from "../core/inventory.js";
+import { releaseOwnership } from "../core/ownership-release.js";
 import { managedStateKey, planChanges } from "../core/plan.js";
 import { resolveDesiredState } from "../core/resolve.js";
 import type { PlanOperation, UserConfig } from "../core/types.js";
@@ -48,7 +50,7 @@ function emit(
 }
 
 function operationJson(operation: PlanOperation): Record<string, unknown> {
-  const arguments_ = commandForOperation(operation);
+  const arguments_ = portableCommandForOperation(operation);
   return {
     kind: operation.kind,
     scope: operation.skill.scope,
@@ -62,9 +64,11 @@ function operationJson(operation: PlanOperation): Record<string, unknown> {
 
 function operationText(operation: PlanOperation): string {
   const agents = operation.skill.agents.join(", ") || "all agents";
-  const command = ["npx", ...commandForOperation(operation)]
+  const command = ["npx", ...portableCommandForOperation(operation)]
     .map((part) =>
-      /^[A-Za-z0-9@._~:/+-]+$/.test(part) ? part : JSON.stringify(part),
+      /^[A-Za-z0-9@._~:/+-]+$/.test(part)
+        ? part
+        : `'${part.replaceAll("'", "'\\''")}'`,
     )
     .join(" ");
   return `${operation.kind.toUpperCase()} ${operation.skill.scope} ${operation.skill.name} for ${agents}\n  ${command}`;
@@ -104,7 +108,21 @@ async function buildPlan(
         await adapter.list("project", projectRoot, runtime.env),
       )
     : [];
-  const managed = await loadManagedState(paths.statePath);
+  let managed = await loadManagedState(paths.statePath);
+  if (projectRoot && config.ownershipReleases?.length) {
+    const remote = await runtime.run(
+      "git",
+      ["config", "--get", "remote.origin.url"],
+      { cwd: projectRoot, env: runtime.env },
+    );
+    const projectId =
+      remote.code === 0 && remote.stdout.trim()
+        ? normalizeRemote(remote.stdout.trim())
+        : await localProjectId(projectRoot);
+    managed = releaseOwnership(config.ownershipReleases, managed, [
+      { projectId, path: projectRoot },
+    ]).managed;
+  }
   const planned = planChanges(
     desired,
     [...global, ...project],
@@ -215,6 +233,7 @@ export async function applyReconciliation(
     return 2;
   }
   if (result.operations.length === 0) {
+    await saveManagedState(result.statePath, result.managed);
     emit(
       runtime,
       options.json,
@@ -257,6 +276,7 @@ export async function applyReconciliation(
     );
     return 5;
   }
+  await saveManagedState(result.statePath, result.managed);
   const adapter = new SkillsAdapter(runtime.run);
   const completed: PlanOperation[] = [];
   const liveOutput =
@@ -297,7 +317,7 @@ export async function applyReconciliation(
         ok: false,
         error: {
           code: "execution_failed",
-          message: stderr.trim() || `npx exited ${execution.code}`,
+          message: stderr.trim() || `skills exited ${execution.code}`,
         },
         completed: completed.map(operationJson),
         pending: pending.map(operationJson),

@@ -12,6 +12,7 @@ export interface DesiredSkill extends SkillRequirement {
 }
 
 export interface InstalledSkill {
+  detectedAgents?: string[] | undefined;
   missing?: boolean | undefined;
   path?: string | undefined;
   repositoryOwned?: boolean | undefined;
@@ -32,8 +33,20 @@ export interface Profile {
   skills: SkillRequirement[];
 }
 
+export interface OwnershipRelease {
+  id: string;
+  projectId: string;
+  name: string;
+}
+
+export interface OwnershipReleaseDelta {
+  releasedKeys: string[];
+  acknowledgedKeys: string[];
+}
+
 export interface UserConfig {
-  version: 1;
+  version: 1 | 2;
+  ownershipReleases?: OwnershipRelease[] | undefined;
   storage: {
     mode: "local" | "external" | "managed";
     path?: string | undefined;
@@ -60,8 +73,9 @@ export interface LocalMachine {
 }
 
 export interface InventorySkill {
+  detectedAgents?: string[] | undefined;
   ownership?: "repository" | "personal" | undefined;
-  desiredSource?: string | undefined;
+  desiredSource?: string | null | undefined;
   desiredAgents?: string[] | undefined;
   conflict?: string | undefined;
   name: string;
@@ -91,12 +105,35 @@ export interface ProjectInventory {
   operations: PlanOperation[];
 }
 
+export interface InventoryProgress {
+  phase: string;
+  path?: string | undefined;
+  completed: number;
+  total: number;
+}
+
 export interface MachineInventory {
+  ownershipRelease?: OwnershipReleaseDelta | undefined;
+  cached?: boolean | undefined;
   remoteObservations?:
     | Array<{
         machine: { id: string; name: string };
         observedAt: string;
-        projects: Array<{ id: string; name: string; skills: InventorySkill[] }>;
+        stale?: boolean | undefined;
+        globalSkills?: InventorySkill[] | undefined;
+        projects: Array<{
+          id: string;
+          name: string;
+          skills: InventorySkill[];
+          checkouts?:
+            | Array<{
+                id: string;
+                skills: InventorySkill[];
+                branch?: string | undefined;
+                commit?: string | undefined;
+              }>
+            | undefined;
+        }>;
       }>
     | undefined;
   version: 1;

@@ -9,11 +9,13 @@ import {
   protectRepositorySkills,
 } from "../adapters/project.js";
 import { loadProjectConfig } from "./config.js";
+import { releaseOwnership } from "./ownership-release.js";
 import { managedStateKey, planChanges } from "./plan.js";
 import { resolveDesiredState } from "./resolve.js";
 import type {
   DesiredSkill,
   InstalledSkill,
+  InventoryProgress,
   InventorySkill,
   LocalMachine,
   MachineInventory,
@@ -44,6 +46,8 @@ export interface InventoryRequest {
 }
 
 export interface InventoryDependencies {
+  concurrency?: number;
+  onProgress?: ((event: InventoryProgress) => void) | undefined;
   listSkills: (
     scope: Scope,
     cwd: string,
@@ -86,7 +90,7 @@ export function normalizeRemote(remote: string): string {
   }
 }
 
-async function localProjectId(path: string): Promise<string> {
+export async function localProjectId(path: string): Promise<string> {
   const canonical = await realpath(path);
   const hash = createHash("sha256")
     .update(canonical)
@@ -184,6 +188,8 @@ function inventorySkills(
       existing.managed = isManaged;
       existing.source = skill.source;
       existing.agents = [...skill.agents].sort();
+      if (skill.detectedAgents)
+        existing.detectedAgents = [...skill.detectedAgents];
       existing.ownership = skill.repositoryOwned ? "repository" : "personal";
       if (
         !skill.repositoryOwned &&
@@ -210,6 +216,9 @@ function inventorySkills(
         source: skill.source,
         scope: skill.scope,
         agents: [...skill.agents].sort(),
+        ...(skill.detectedAgents
+          ? { detectedAgents: [...skill.detectedAgents] }
+          : {}),
         installed: !skill.missing,
         desired: false,
         managed: isManaged,
@@ -229,31 +238,78 @@ function operationKey(operation: PlanOperation): string {
   return `${operation.checkoutPath ?? ""}:${operation.kind}:${operation.skill.scope}:${operation.skill.name}:${operation.skill.source ?? ""}`;
 }
 
+async function concurrentMap<T, R>(
+  items: T[],
+  limit: number,
+  work: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const index = next++;
+        results[index] = await work(items[index]!);
+      }
+    }),
+  );
+  return results;
+}
+
 export async function buildInventory(
   request: InventoryRequest,
   dependencies: InventoryDependencies,
 ): Promise<MachineInventory> {
   const observedAt = (dependencies.now?.() ?? new Date()).toISOString();
+  let rootsCompleted = 0;
+  dependencies.onProgress?.({
+    phase: "discovery",
+    completed: 0,
+    total: request.machine.workspaces.length,
+  });
   const rootResults = await Promise.all(
-    request.machine.workspaces.map(scanRoot),
+    request.machine.workspaces.map(async (workspace) => {
+      const result = await scanRoot(workspace);
+      dependencies.onProgress?.({
+        phase: "discovery",
+        path: workspace.path,
+        completed: ++rootsCompleted,
+        total: request.machine.workspaces.length,
+      });
+      return result;
+    }),
   );
   const checkoutPaths = [
     ...new Set(rootResults.flatMap((result) => result.checkouts)),
   ].sort();
-  const discovered: DiscoveredCheckout[] = [];
-  for (const path of checkoutPaths) {
-    const remote = await dependencies.projectRemote(path);
-    const projectId = remote
-      ? normalizeRemote(remote)
-      : await localProjectId(path);
-    discovered.push({
-      path,
-      remote,
-      projectId,
-      name: basename(projectId.replace(/^local:/, "").split(":")[0] || path),
-    });
-  }
+  const concurrency = Math.max(
+    1,
+    Math.min(16, Math.floor(dependencies.concurrency ?? 4)),
+  );
 
+  const discovered: DiscoveredCheckout[] = await concurrentMap(
+    checkoutPaths,
+    concurrency,
+    async (path) => {
+      const remote = await dependencies.projectRemote(path);
+      const projectId = remote
+        ? normalizeRemote(remote)
+        : await localProjectId(path);
+      return {
+        path,
+        remote,
+        projectId,
+        name: basename(projectId.replace(/^local:/, "").split(":")[0] || path),
+      };
+    },
+  );
+
+  const release = releaseOwnership(
+    request.config.ownershipReleases ?? [],
+    request.managed,
+    discovered,
+  );
+  const managed = release.managed;
   const globalInstalled = await dependencies.listSkills(
     "global",
     request.cwd,
@@ -263,10 +319,33 @@ export async function buildInventory(
     request.config,
     request.machine.id,
   ).filter((skill) => skill.scope === "global");
-  const globalOperations = planChanges(
-    globalDesired,
-    globalInstalled,
-    request.managed,
+  const globalOperations = planChanges(globalDesired, globalInstalled, managed);
+
+  dependencies.onProgress?.({ phase: "global", completed: 1, total: 1 });
+  let completed = 0;
+  dependencies.onProgress?.({
+    phase: "checkouts",
+    completed,
+    total: discovered.length,
+  });
+  const prepared = new Map(
+    await concurrentMap(discovered, concurrency, async (checkout) => {
+      const installed = await inspectProjectSkills(
+        checkout.path,
+        await dependencies.listSkills("project", checkout.path, request.env),
+      );
+      const manifest = await loadProjectConfig(
+        join(checkout.path, ".skilloom.yaml"),
+      );
+      const revision = await projectRevision(checkout.path);
+      dependencies.onProgress?.({
+        phase: "checkouts",
+        path: checkout.path,
+        completed: ++completed,
+        total: discovered.length,
+      });
+      return [checkout.path, { installed, manifest, revision }] as const;
+    }),
   );
 
   const grouped = new Map<string, DiscoveredCheckout[]>();
@@ -287,13 +366,7 @@ export async function buildInventory(
     for (const checkout of checkouts.sort((left, right) =>
       left.path.localeCompare(right.path),
     )) {
-      const installed = await inspectProjectSkills(
-        checkout.path,
-        await dependencies.listSkills("project", checkout.path, request.env),
-      );
-      const manifest = await loadProjectConfig(
-        join(checkout.path, ".skilloom.yaml"),
-      );
+      const { installed, manifest, revision } = prepared.get(checkout.path)!;
       const desired = resolveDesiredState(
         request.config,
         request.machine.id,
@@ -304,7 +377,7 @@ export async function buildInventory(
       const checkoutSkills = inventorySkills(
         desired,
         installed,
-        request.managed,
+        managed,
         checkout.path,
       );
       for (const item of checkoutSkills) {
@@ -329,7 +402,7 @@ export async function buildInventory(
         }
       }
       const checkoutOperations = protectRepositorySkills(
-        planChanges(desired, installed, request.managed, checkout.path),
+        planChanges(desired, installed, managed, checkout.path),
         installed,
       ).map((operation) => ({ ...operation, checkoutPath: checkout.path }));
       for (const operation of checkoutOperations) {
@@ -337,7 +410,7 @@ export async function buildInventory(
       }
       checkoutInventories.push({
         path: checkout.path,
-        ...(await projectRevision(checkout.path)),
+        ...revision,
         skills: checkoutSkills,
         operations: checkoutOperations,
       });
@@ -363,6 +436,9 @@ export async function buildInventory(
     throw new Error(`machine ${request.machine.id} has no profile assignment`);
   return {
     version: 1,
+    ...(release.delta.acknowledgedKeys.length
+      ? { ownershipRelease: release.delta }
+      : {}),
     observedAt,
     machine: {
       id: request.machine.id,
@@ -408,11 +484,7 @@ export async function buildInventory(
           : {}),
       }))
       .sort((left, right) => left.name.localeCompare(right.name)),
-    globalSkills: inventorySkills(
-      globalDesired,
-      globalInstalled,
-      request.managed,
-    ),
+    globalSkills: inventorySkills(globalDesired, globalInstalled, managed),
     projects,
     operations: [
       ...globalOperations,

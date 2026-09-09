@@ -274,6 +274,21 @@ describe("CLI", () => {
     expect(machine.workspaces).toEqual([{ path: workspace, depth: 3 }]);
   });
 
+  it("quotes portable shell previews without expanding local source text", async () => {
+    const home = await mkdtemp(join(tmpdir(), "skilloom-quote-"));
+    const test = runtime(home);
+    await runCli(["init", "--yes"], test.value);
+    await setGlobalSkills(home, ["review"]);
+    const configPath = join(home, ".config/skilloom/config.yaml");
+    const config = await loadUserConfig(configPath);
+    config.profiles.default!.skills[0]!.source = "/tmp/$(echo unsafe)";
+    await saveUserConfig(configPath, config);
+    await runCli(["plan"], test.value);
+    expect(test.out.at(-1)).toContain(
+      "npx --yes skills@1.5.25 add '/tmp/$(echo unsafe)'",
+    );
+  });
+
   it("plans, checks drift, and applies with stable JSON", async () => {
     const home = await mkdtemp(join(tmpdir(), "skilloom-cli-"));
     const test = runtime(home);
@@ -284,7 +299,8 @@ describe("CLI", () => {
     expect(plan.operations[0].command).toEqual({
       executable: "npx",
       arguments: [
-        "skills",
+        "--yes",
+        "skills@1.5.25",
         "add",
         "acme/skills",
         "--skill",
@@ -727,6 +743,11 @@ describe("CLI", () => {
     const project = await mkdtemp(join(tmpdir(), "skilloom-project-"));
     await initializeGit(project);
     test.value.cwd = project;
+    const previousRunner = test.value.run;
+    test.value.run = async (executable, args, options) =>
+      executable === process.execPath
+        ? { code: 0, stdout: "1.5.25", stderr: "" }
+        : previousRunner(executable, args, options);
 
     expect(await runCli(["doctor", "--json"], test.value)).toBe(0);
     const checks = JSON.parse(test.out.at(-1) ?? "{}").checks as Array<{

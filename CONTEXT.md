@@ -14,11 +14,11 @@ A Git repository identified by its normalized remote when available. A project m
 
 ## Checkout
 
-A local copy of a project on one machine. Several independent clones can refer to the same project. Linked Git worktrees are temporary working copies excluded from automatic workspace management.
+A local copy of a project on one machine. Several independent clones can refer to the same project while differing in skill sources and ownership. Local inventory retains each path. Published observations identify checkouts with opaque stable IDs and omit their paths. Linked Git worktrees are temporary working copies excluded from automatic workspace management.
 
 ## Profile
 
-A named desired set of globally installed skills. Machines assigned to the same profile share that desired state.
+A named desired set of globally installed skills. Machines assigned to the same profile share that desired state. Setup can preserve each machine's existing globals in its own profile. Copying a profile creates an independent starting point.
 
 ## Project policy
 
@@ -51,3 +51,27 @@ The difference between desired policy and the latest local observation. Remote o
 ## Sync
 
 Bringing the current machine's personal installations and declared dependencies into agreement with shared policy, verifying the result, and reporting its observation. Policy agreement does not establish identical content revisions across machines.
+
+## Skill library
+
+The human-facing Ink interface groups skill occurrences across machines and scopes. Each occurrence keeps its source, ownership, installation state, desired policy, and observation time. Grouping a name does not establish equal contents or sources.
+
+## Installation coverage
+
+The agent targets served by an installed location under the pinned upstream skills model. Universal agents share canonical `.agents/skills` directories in both scopes. Upstream-reported detected agents are retained separately; coverage does not establish that an agent application is installed or operating.
+
+## Source proof
+
+A local record produced by comparing installed contents with a source repository. It can fill an unknown source only while the installed path, resolved target, and content hash still match. A desired requirement is not source evidence. Verification does not establish management ownership.
+
+## Cached and remote state
+
+Cached inventory is the last saved local observation and requires no scan or Git access. Remote observations are always historical. New publications preserve separate checkout occurrences and global skills; older observations may contain only aggregates or omit global data. Missing information stays unknown.
+
+## Reviewed plan
+
+A sync or migration preview identified by a fingerprint. Applying with an expected fingerprint rejects changed inputs. Sync distinguishes application, verification, and publication outcomes, including partial success. Migration repairs supported legacy policy and ownership claims with backups while preserving installed files.
+
+## Ownership release
+
+A shared version 2 configuration record created when migration removes a legacy project requirement. Each checkout consumes it once into local state before planning, preserving installed files across machines. Dry runs simulate consumption; apply persists it. Acknowledgements survive later adoption, so the release does not permanently exempt a skill from normal management. Older clients reject version 2 and must be upgraded before syncing.
