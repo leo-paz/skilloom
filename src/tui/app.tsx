@@ -142,8 +142,16 @@ function Line({
     </Text>
   );
 }
+interface DetailCell {
+  text: string;
+  width: number;
+  tone?: string | undefined;
+  bold?: boolean | undefined;
+}
 interface DetailLine {
   text: string;
+  cells?: DetailCell[];
+
   tone?: string | undefined;
   bold?: boolean;
 }
@@ -157,7 +165,80 @@ function wrapLines(lines: DetailLine[], width: number): DetailLine[] {
       .map((text) => ({ ...line, text })),
   );
 }
+const wrapText = (text: string, width: number): string[] =>
+  wrapAnsi(safeText(text), Math.max(4, width), {
+    hard: true,
+    trim: false,
+  }).split("\n");
+function wrapPath(value: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const part of safeText(value).split(/(?<=\/)/)) {
+    if (line && wrapText(line + part, width).length > 1) {
+      lines.push(line);
+      line = "";
+    }
+    const wrapped = wrapText(line + part, width);
+    lines.push(...wrapped.slice(0, -1));
+    line = wrapped.at(-1) ?? "";
+  }
+  if (line || !lines.length) lines.push(line);
+  return lines;
+}
+function field(
+  label: string,
+  value: string,
+  width: number,
+  tone?: string,
+): DetailLine[] {
+  const labelWidth = Math.min(14, Math.floor(width * 0.36));
+  const labels = wrapText(label, labelWidth);
+  const values = (label === "Checkout" ? wrapPath : wrapText)(
+    value,
+    width - labelWidth - 3,
+  );
+  return Array.from(
+    { length: Math.max(labels.length, values.length) },
+    (_, index) => ({
+      text: "",
+      cells: [
+        { text: labels[index] ?? "", width: labelWidth + 3, tone: color.muted },
+        { text: values[index] ?? "", width: width - labelWidth - 3, tone },
+      ],
+    }),
+  );
+}
+function beside(
+  left: DetailLine[],
+  right: DetailLine[],
+  width: number,
+): DetailLine[] {
+  const cells = (line: DetailLine | undefined): DetailCell[] =>
+    line?.cells ?? [
+      { text: line?.text ?? "", width, tone: line?.tone, bold: line?.bold },
+    ];
+  return Array.from(
+    { length: Math.max(left.length, right.length) },
+    (_, index) => ({
+      text: "",
+      cells: [
+        ...cells(left[index]),
+        { text: "", width: 6 },
+        ...cells(right[index]),
+      ],
+    }),
+  );
+}
+const scanLabel = (status: string): string =>
+  status === "unscanned"
+    ? "Unscanned"
+    : status === "incomplete"
+      ? "Partial scan"
+      : "Complete scan";
 function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
+  const usableWidth = Math.min(112, Math.max(12, width - 2));
+  const wide = usableWidth >= 96;
+  const columnWidth = wide ? Math.floor((usableWidth - 6) / 2) : usableWidth;
   const content: DetailLine[] = [
     { text: `Skill details · ${entry.name}`, bold: true },
   ];
@@ -212,7 +293,8 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       machineOrder.indexOf(a.record.machine.id) -
       machineOrder.indexOf(b.record.machine.id),
   )) {
-    if (activeMachine !== record.machine.id) {
+    const firstOnMachine = activeMachine !== record.machine.id;
+    if (firstOnMachine) {
       content.push(
         { text: " " },
         {
@@ -221,111 +303,262 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
           tone: color.accent,
         },
       );
-      content.push({
-        text: `Last observed ${observedLabel(record.observedAt)}${record.stale ? " · Saved" : ""}`,
-        tone: color.muted,
-      });
       activeMachine = record.machine.id;
     } else content.push({ text: " " });
     const heading =
       record.scope === "global"
         ? "Global installation"
         : record.projectId && !record.projectId.startsWith("local:")
-          ? `Repository: ${record.projectId}`
+          ? record.projectId
           : `Local project: ${record.projectName ?? "Unknown"}`;
-    const block: DetailLine[] = [
+    content.push(
       {
         text: `${heading}${count > 1 ? ` (${count} locations)` : ""}`,
-        bold: true,
         tone: color.repository,
+        bold: true,
       },
+      { text: " " },
+    );
+    const installation: DetailLine[] = [
+      { text: "Installation", bold: true },
+      { text: " " },
     ];
-    block.push({
-      text: `Skill source: ${record.source ?? "Unknown"}`,
-      tone: record.source ? color.repository : color.muted,
-    });
+    const behavior: DetailLine[] = [
+      { text: "Agent behavior", bold: true },
+      { text: " " },
+    ];
     const owner = ownershipLabel(record);
-    block.push({
-      text: `${record.installed ? "Installed" : "Missing"} · ${owner === "Managed" ? "Managed by Skilloom" : owner}${record.desired ? " · Required" : ""}`,
-      tone: record.installed ? undefined : color.warning,
-    });
+    installation.push(
+      ...field(
+        "Status",
+        record.installed ? "Installed" : "Missing",
+        columnWidth,
+        record.installed ? color.good : color.warning,
+      ),
+    );
+    installation.push(
+      ...field(
+        "Ownership",
+        owner === "Managed" ? "Skilloom managed" : owner,
+        columnWidth,
+      ),
+    );
+    if (record.desired)
+      installation.push(...field("Policy", "Required", columnWidth));
+    installation.push(
+      { text: " " },
+      ...field(
+        "Skill source",
+        record.source ?? "Unknown",
+        columnWidth,
+        record.source ? color.repository : color.muted,
+      ),
+    );
     for (const path of [...new Set(paths)])
-      block.push({ text: `Path: ${path}`, tone: color.muted });
+      installation.push(...field("Checkout", path, columnWidth));
     if (!paths.length && record.checkoutId)
-      block.push({
-        text: `Checkout ID: ${record.checkoutId}`,
-        tone: color.muted,
-      });
+      installation.push(
+        ...field("Checkout ID", record.checkoutId, columnWidth),
+      );
+    if (firstOnMachine)
+      installation.push(
+        { text: " " },
+        ...field(
+          "Last observed",
+          observedLabel(record.observedAt),
+          columnWidth,
+          color.muted,
+        ),
+      );
     const variants = record.metadata?.variants ?? [];
+    const mode = record.metadata?.invocation ?? "unknown";
+    const modeLabel =
+      mode === "unknown"
+        ? "Unknown"
+        : mode === "both"
+          ? "Manual + automatic"
+          : invocationLabel(mode);
+    behavior.push(...field("Invocation", modeLabel, columnWidth));
     const known = variants.filter(
       (variant) =>
         variant.status === "read" && variant.invocation !== "unknown",
     );
-    const mode = record.metadata?.invocation ?? "unknown";
     const uniform =
       known.length > 0 && known.every((variant) => variant.invocation === mode);
-    block.push(
-      { text: " " },
-      {
-        text: `Invocation: ${invocationLabel(mode)} (declared)${uniform ? ` · ${known.map((variant) => variant.agent).join(", ")}` : ""}`,
-      },
-      {
-        text: `Available to: ${record.agents.join(", ") || "Unknown"}`,
-        tone: color.muted,
-      },
+    const declaresAllAvailable =
+      new Set(known.map((variant) => variant.agent)).size ===
+        new Set(record.agents).size &&
+      record.agents.every((agent) =>
+        known.some((variant) => variant.agent === agent),
+      );
+    if (uniform && mode !== "unknown" && !declaresAllAvailable)
+      behavior.push(
+        ...field(
+          "Declared for",
+          known.map((variant) => variant.agent).join(", "),
+          columnWidth,
+          color.muted,
+        ),
+      );
+    behavior.push(
+      ...field(
+        "Available to",
+        record.agents.join(", ") || "Unknown",
+        columnWidth,
+      ),
     );
     for (const variant of variants.filter(
       (variant) =>
         variant.status !== "unsupported" &&
         !(uniform && known.includes(variant)),
-    ))
-      block.push({
-        text: `${variant.agent}: ${invocationLabel(variant.invocation)} · ${variant.status}`,
-        tone: color.muted,
-      });
-    const unsupportedCount = variants.filter(
+    )) {
+      if (
+        variant.status === "read" &&
+        variant.invocation === "unknown" &&
+        mode === "unknown"
+      )
+        continue;
+      behavior.push(
+        ...field(
+          variant.agent,
+          variant.invocation === "unknown"
+            ? variant.status
+            : invocationLabel(variant.invocation),
+          columnWidth,
+          color.muted,
+        ),
+      );
+    }
+    const unsupported = variants.filter(
       (variant) => variant.status === "unsupported",
-    ).length;
-    if (unsupportedCount)
-      block.push({
-        text: `Invocation unknown for ${unsupportedCount} agent${unsupportedCount === 1 ? "" : "s"}.`,
-        tone: color.muted,
-      });
+    );
+    if (unsupported.length && mode !== "unknown")
+      behavior.push(
+        ...field(
+          "Unknown for",
+          unsupported.map((variant) => variant.agent).join(", "),
+          columnWidth,
+          color.muted,
+        ),
+      );
     if (record.detectedAgents)
-      block.push({
-        text: `Detected here: ${record.detectedAgents.join(", ")}`,
-        tone: color.muted,
-      });
-    block.push({ text: " " });
+      behavior.push(
+        ...field(
+          "Detected here",
+          record.detectedAgents.join(", "),
+          columnWidth,
+          color.muted,
+        ),
+      );
+    behavior.push({ text: " " });
     if (record.usedBy?.length) {
-      for (const usage of record.usedBy)
-        block.push({
-          text: `Read evidence: ${harnessLabel(usage.harness)} · ${usage.count} ${usage.evidence === "invoke" ? "invocations" : "skill reads"} · ${observedLabel(usage.lastUsedAt)}`,
-          tone: color.good,
-        });
+      for (const usage of record.usedBy) {
+        behavior.push(
+          ...field(
+            harnessLabel(usage.harness),
+            `${usage.count} ${usage.evidence === "invoke" ? "invocations" : "skill reads"}`,
+            columnWidth,
+            color.good,
+          ),
+        );
+        behavior.push(
+          ...field(
+            "Last read",
+            observedLabel(usage.lastUsedAt),
+            columnWidth,
+            color.muted,
+          ),
+        );
+      }
     } else
-      block.push({
-        text: record.usageCoverage
-          ? "Read evidence: No matches in scanned logs."
-          : "Read evidence: Unscanned on this machine.",
-        tone: color.muted,
-      });
-    if (record.nameEvidence?.length)
-      block.push({
-        text: `Name-only invocations: ${record.nameEvidence.map((usage) => harnessLabel(usage.harness)).join(", ")}. Not attributed to this installation.`,
-        tone: color.muted,
-      });
+      behavior.push(
+        ...field(
+          "Read evidence",
+          record.usageCoverage ? "None recorded" : "Not collected",
+          columnWidth,
+          color.muted,
+        ),
+      );
+    for (const usage of record.nameEvidence ?? [])
+      behavior.push(
+        ...field(
+          "Name-only use",
+          `${harnessLabel(usage.harness)}: ${usage.count} invocations. Installation unknown.`,
+          columnWidth,
+          color.muted,
+        ),
+      );
     if (record.conflict)
-      block.push({ text: record.conflict, tone: color.error });
-    content.push(...block);
+      installation.push(
+        { text: " " },
+        ...field("Conflict", record.conflict, columnWidth, color.error),
+      );
+    content.push(
+      ...(wide
+        ? beside(installation, behavior, columnWidth)
+        : [...installation, { text: " " }, ...behavior]),
+    );
   }
-  content.push({ text: " " }, { text: "Evidence coverage", bold: true });
-  for (const machine of entry.usageMachines)
-    content.push({
-      text: `${machine.name} · ${machine.status === "unscanned" ? "Unscanned" : machine.status === "incomplete" ? "Partial scan" : "Supported scan complete"}${machine.observedAt ? ` · ${observedLabel(machine.observedAt)}` : ""}`,
-      tone: color.muted,
+  content.push(
+    { text: " " },
+    { text: " " },
+    { text: "Evidence coverage", bold: true },
+    { text: " " },
+  );
+  if (usableWidth >= 76) {
+    const widths = [
+      Math.floor(usableWidth * 0.34),
+      Math.floor(usableWidth * 0.26),
+    ];
+    widths.push(usableWidth - widths[0]! - widths[1]!);
+    const tableRow = (values: string[], header = false) => {
+      const columns = values.map((value, index) =>
+        wrapText(value, widths[index]! - 3),
+      );
+      return Array.from(
+        { length: Math.max(...columns.map((column) => column.length)) },
+        (_, i) => ({
+          text: "",
+          cells: columns.map((column, index) => ({
+            text: column[i] ?? "",
+            width: widths[index]!,
+            tone: header ? color.muted : undefined,
+            bold: header,
+          })),
+        }),
+      );
+    };
+    content.push(...tableRow(["Machine", "Scan", "Collected"], true), {
+      text: " ",
     });
-  return wrapLines(content, width - 2);
+    for (const machine of entry.usageMachines)
+      content.push(
+        ...tableRow([
+          machine.name,
+          scanLabel(machine.status),
+          machine.observedAt ? observedLabel(machine.observedAt) : "—",
+        ]),
+      );
+  } else {
+    for (const machine of entry.usageMachines) {
+      content.push(
+        ...field(machine.name, scanLabel(machine.status), usableWidth),
+      );
+      if (machine.observedAt)
+        content.push(
+          ...field(
+            "Collected",
+            observedLabel(machine.observedAt),
+            usableWidth,
+            color.muted,
+          ),
+        );
+      content.push({ text: " " });
+    }
+  }
+  return content.flatMap((line) =>
+    line.cells ? [line] : wrapLines([line], usableWidth),
+  );
 }
 function Preview({
   entry,
@@ -407,11 +640,27 @@ function Inspector({
   const start = Math.min(offset, Math.max(0, wrapped.length - page));
   return (
     <Box flexDirection="column" paddingX={1}>
-      {wrapped.slice(start, start + page).map((line, i) => (
-        <Line key={i} tone={line.tone} bold={line.bold}>
-          {line.text}
-        </Line>
-      ))}
+      {wrapped.slice(start, start + page).map((line, i) =>
+        line.cells ? (
+          <Box key={i} height={1} flexShrink={0}>
+            {line.cells.map((cell, column) => (
+              <Box key={column} width={cell.width} flexShrink={0}>
+                <Text
+                  {...(cell.tone ? { color: cell.tone } : {})}
+                  bold={cell.bold ?? false}
+                  wrap="truncate-end"
+                >
+                  {cell.text}
+                </Text>
+              </Box>
+            ))}
+          </Box>
+        ) : (
+          <Line key={i} tone={line.tone} bold={line.bold}>
+            {line.text}
+          </Line>
+        ),
+      )}
       {wrapped.length > page && (
         <Line tone={color.accent}>
           Details · {start + 1}–{Math.min(start + page, wrapped.length)}/

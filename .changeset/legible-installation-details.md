@@ -2,4 +2,4 @@
 "skilloom": patch
 ---
 
-Clarify skill details with a flat layout, distinct machine and repository headings, separately labelled skill sources, and consolidated declaration and scan metadata.
+Present skill details as a responsive property sheet with separate installation and agent behavior sections, aligned values, readable path wrapping, and tabular machine scan coverage.

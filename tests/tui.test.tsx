@@ -442,7 +442,7 @@ describe("full-screen skill library", () => {
     app.stdin.write("\r");
     await tick();
     expect(app.lastFrame()).toContain("Skill details");
-    expect(app.lastFrame()).not.toContain("Ownership");
+    expect(app.lastFrame()).not.toContain("Results ·");
     app.stdin.write("\u001b");
     await tick();
     expect(app.lastFrame()).toContain("Results");

@@ -281,7 +281,7 @@ def exercise(executable, home, width, height):
             assert "Enter focus inspector" not in terminal.screen.text(), "Preview still exposes an independent focus mode"
         terminal.send(b"\r", "full-page details at every width", lambda text: "Skill details" in text and "bravo-writing" in text and "Esc results" in text)
         assert "Preview" not in terminal.screen.text(), "Details left the preview pane visible"
-        assert "Ownership" not in terminal.screen.text(), "Details left the library table visible"
+        assert "Results ·" not in terminal.screen.text(), "Details left the library table visible"
         terminal.send(b"\x1b", "return before i shortcut", lambda text: "Results" in text)
         terminal.send(b"i", "i opens full details from results", lambda text: "Skill details" in text)
         terminal.send(b"/", "search from details returns to results", lambda text: "Editing search" in text and "Results" in text and "Skill details" not in text and "bravo-writing" in text)
