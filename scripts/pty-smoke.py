@@ -296,21 +296,13 @@ def exercise(executable, home, width, height):
         terminal.send(b"x", "clear scope filter", lambda text: "alpha-review" in text)
         terminal.send(b"o", "managed ownership filter", lambda text: "alpha-review" in text and "bravo-writing" not in text)
         terminal.send(b"x", "clear ownership filter", lambda text: "bravo-writing" in text)
-        terminal.send(b"\t", "Machines selected list", lambda text: "This machine" in text and re.search(r"›\s+PTY Mac", text) is not None)
-        assert "Search:" not in terminal.screen.text(), "Machines retained the Library search header"
-        assert "All machines ·" not in terminal.screen.text(), "Machines retained Library filters"
-        for key in (b"a", b"d", b"v"):
-            terminal.send(key, "Library action ignored in Machines", lambda text: "This machine" in text and "Add a requirement" not in text and "Verify source for" not in text)
-        terminal.send(b"\x1b[Z", "Shift-Tab returns to Library", lambda text: "Results" in text and "alpha-review" in text)
-        terminal.send(b"\t", "return to Machines", lambda text: "This machine" in text)
-        terminal.send(b"\x1b[B", "select remote machine", lambda text: re.search(r"›\s+PTY Studio", text) is not None)
-        terminal.send(b"\r", "open selected machine Library", lambda text: "Results" in text and "remote-only" in text and "alpha-review" not in text)
-        terminal.send(b"\r", "inspect selected remote skill", lambda text: "Skill details" in text and "remote-only" in text)
-        terminal.send(b"\x1b", "details return to scoped results first", lambda text: "Results" in text and "remote-only" in text and "Skill details" not in text)
-        terminal.send(b"\x1b", "scoped results return to selected machine", lambda text: "This machine" in text and re.search(r"›\s+PTY Studio", text) is not None)
-        terminal.send(b"\x1b", "secondary Escape returns to Library", lambda text: "Results" in text)
+        assert "s Sync PTY Mac" in terminal.screen.text(), "Library sync action is not visible"
+        terminal.send(b"\x1b[D", "browse remote snapshot", lambda text: "remote-only" in text and "alpha-review" not in text)
+        assert "s Sync PTY Mac" in terminal.screen.text(), "Sync target followed the remote browsing filter"
+        terminal.send(b"s", "sync directly from Library", lambda text: "Review local sync" in text and "No installation changes" in text)
+        terminal.send(b"\x1b", "cancel sync back to remote Library", lambda text: "Results" in text and "remote-only" in text and "s Sync PTY Mac" in text)
         terminal.send(b"x", "reset machine filter explicitly", lambda text: "alpha-review" in text)
-        terminal.send(b"3", "Changes selected review action", lambda text: "Changes on PTY Mac" in text and re.search(r"›\s+Review sync", text) is not None)
+        terminal.send(b"\t", "Changes selected review action", lambda text: "Changes on PTY Mac" in text and re.search(r"›\s+Review sync", text) is not None)
         assert "Search:" not in terminal.screen.text(), "Changes retained the Library search header"
         for key in (b"a", b"d", b"v"):
             terminal.send(key, "Library action ignored in Changes", lambda text: "Changes on PTY Mac" in text and "Add a requirement" not in text and "Verify source for" not in text)
@@ -335,7 +327,6 @@ def exercise(executable, home, width, height):
         terminal.send(b"\r", "open read-only migration review", lambda text: "Review migration" in text)
         terminal.send(b"\x1b", "cancel migration review", lambda text: "Settings for PTY Mac" in text and re.search(r"›\s+Review legacy adoption", text) is not None)
         terminal.send(b"\x1b[Z", "reverse Tab to Changes", lambda text: "Changes on PTY Mac" in text)
-        terminal.send(b"\x1b[Z", "reverse Tab to Machines", lambda text: "This machine" in text and "PTY Studio" in text)
         terminal.send(b"\x1b[Z", "reverse Tab to Library", lambda text: "Results" in text and "alpha-review" in text)
         terminal.send(b"?", "keyboard guide", lambda text: "Keyboard guide" in text)
         terminal.send(b"\x1b", "close guide", lambda text: "alpha-review" in text)

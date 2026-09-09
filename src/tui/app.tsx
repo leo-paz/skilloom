@@ -364,17 +364,8 @@ export function SkilloomApp({
   const [details, setDetails] = useState(false);
   const [technical, setTechnical] = useState(false);
   const [detailOffset, setDetailOffset] = useState(0);
-  const [machineIndex, setMachineIndex] = useState(
-    Math.max(
-      0,
-      initialInventory?.machines.findIndex(
-        (machine) => machine.id === initialInventory.machine.id,
-      ) ?? 0,
-    ),
-  );
   const [settingsIndex, setSettingsIndex] = useState(0);
   const [changeIndex, setChangeIndex] = useState(0);
-  const [libraryOrigin, setLibraryOrigin] = useState<"Machines">();
   const [outcome, setOutcome] = useState<string[]>();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
@@ -471,15 +462,24 @@ export function SkilloomApp({
   };
   const narrow = size.width < 100;
   const tiny = size.width < 65;
-  const bodyHeight = Math.max(5, size.height - (view === "Library" ? 8 : 6));
+  const showLibrarySync =
+    view === "Library" &&
+    inventory &&
+    !searching &&
+    !details &&
+    !form &&
+    !review &&
+    !outcome &&
+    !help;
+  const bodyHeight = Math.max(
+    5,
+    size.height - (view === "Library" ? 8 : 6) - (showLibrarySync ? 1 : 0),
+  );
   const pageSize = Math.max(1, bodyHeight - 4);
   useEffect(() => {
     setDetailOffset(0);
   }, [selected?.name]);
   useEffect(() => {
-    setMachineIndex((index) =>
-      Math.min(index, Math.max(0, (inventory?.machines.length ?? 0) - 1)),
-    );
     setChangeIndex((index) =>
       Math.min(index, inventory?.operations.length ?? 0),
     );
@@ -487,7 +487,6 @@ export function SkilloomApp({
   const goToView = (next: string) => {
     setView(next);
     setDetails(false);
-    setLibraryOrigin(undefined);
     setNotice("");
   };
   const execute = async (args: string[], refresh = true) => {
@@ -942,10 +941,6 @@ export function SkilloomApp({
     if (key.escape) {
       if (details) setDetails(false);
       else if (view !== "Library") goToView("Library");
-      else if (libraryOrigin) {
-        setView(libraryOrigin);
-        setLibraryOrigin(undefined);
-      }
       return;
     }
     if (input === "q") {
@@ -962,19 +957,13 @@ export function SkilloomApp({
       setSearching(true);
       return;
     }
-    if (["1", "2", "3", "4"].includes(input)) {
-      goToView(
-        ["Library", "Machines", "Changes", "Settings"][Number(input) - 1]!,
-      );
+    if (["1", "2", "3"].includes(input)) {
+      goToView(["Library", "Changes", "Settings"][Number(input) - 1]!);
       return;
     }
     if (key.tab) {
       goToView(
-        cycle(
-          ["Library", "Machines", "Changes", "Settings"],
-          view,
-          key.shift ? -1 : 1,
-        ),
+        cycle(["Library", "Changes", "Settings"], view, key.shift ? -1 : 1),
       );
       return;
     }
@@ -995,24 +984,13 @@ export function SkilloomApp({
       return;
     }
     if (view !== "Library") {
-      const selectedIndex =
-        view === "Machines"
-          ? machineIndex
-          : view === "Changes"
-            ? changeIndex
-            : settingsIndex;
+      const selectedIndex = view === "Changes" ? changeIndex : settingsIndex;
       const setSelected =
-        view === "Machines"
-          ? setMachineIndex
-          : view === "Changes"
-            ? setChangeIndex
-            : setSettingsIndex;
+        view === "Changes" ? setChangeIndex : setSettingsIndex;
       const count =
-        view === "Machines"
-          ? inventory.machines.length
-          : view === "Changes"
-            ? inventory.operations.length + 1
-            : settingsActions.length;
+        view === "Changes"
+          ? inventory.operations.length + 1
+          : settingsActions.length;
       const last = Math.max(0, count - 1);
       const step = Math.max(1, bodyHeight - 9);
       if (key.downArrow || input === "j" || key.pageDown) {
@@ -1029,22 +1007,6 @@ export function SkilloomApp({
       }
       if (key.end) {
         setSelected(last);
-        return;
-      }
-      if (view === "Machines") {
-        if (key.return) {
-          const target = inventory.machines[machineIndex];
-          if (!target) return;
-          setMachine(target.id);
-          setQuery("");
-          setScope("all");
-          setOwnership("all");
-          setIndex(0);
-          setDetails(false);
-          setView("Library");
-          setLibraryOrigin("Machines");
-          setNotice("");
-        }
         return;
       }
       if (view === "Changes") {
@@ -1227,10 +1189,10 @@ export function SkilloomApp({
             : view !== "Library"
               ? tiny
                 ? "↑↓ select · Enter open · Esc library"
-                : `↑↓ select   Enter ${view === "Machines" ? "browse skills" : view === "Changes" ? "open" : "choose"}   Tab/Shift-Tab views   Esc library`
+                : `↑↓ select   Enter ${view === "Changes" ? "open" : "choose"}   Tab/Shift-Tab views   Esc library`
               : tiny
                 ? "↑↓ select · Enter open · / search · ?"
-                : `↑↓ select   Enter open   / search   ${libraryOrigin ? "Esc machines   " : ""}? help   q quit`;
+                : `↑↓ select   Enter open   / search   ? help   q quit`;
   let content: React.ReactNode;
   if (outcome) {
     const lines = wrapLines(
@@ -1255,7 +1217,7 @@ export function SkilloomApp({
       <Box flexDirection="column" padding={1}>
         <Line bold>Keyboard guide</Line>
         {[
-          "1–4 Switch view   Tab Next   Shift-Tab Previous",
+          "1–3 Switch view   Tab Next   Shift-Tab Previous",
           "/ Search   ←/→ Edit text   Enter/Esc Results",
           "↑↓ or j/k Select   Details: i Show technical information",
           "←/→ Change machine in Results   g Scope   o Ownership",
@@ -1349,37 +1311,7 @@ export function SkilloomApp({
         <Line tone={color.accent}>Enter Set up this machine</Line>
       </Box>
     );
-  else if (view === "Machines") {
-    const selectedMachine = inventory.machines[machineIndex];
-    const local = selectedMachine?.id === inventory.machine.id;
-    content = (
-      <SelectionMenu
-        title="Machines"
-        subtitle="Select a machine to browse its skills."
-        items={inventory.machines.map((machine) => ({
-          label: `${machine.name}   ${machine.id === inventory.machine.id ? "This machine" : "Remote"}`,
-        }))}
-        selected={machineIndex}
-        height={bodyHeight}
-        width={size.width}
-        context={
-          selectedMachine
-            ? [
-                `Profile: ${selectedMachine.profile} · ${local ? inventory.discovery.projectsFound : (selectedMachine.projects ?? "?")} projects`,
-                local
-                  ? `Observed ${observedLabel(inventory.observedAt)}`
-                  : selectedMachine.observedAt
-                    ? `Last published ${observedLabel(selectedMachine.observedAt)}`
-                    : "No observation published yet.",
-                local
-                  ? "Refresh inspects this machine."
-                  : "Remote skills are saved observations, not live state.",
-              ]
-            : []
-        }
-      />
-    );
-  } else if (view === "Settings")
+  else if (view === "Settings")
     content = (
       <SelectionMenu
         title={`Settings for ${inventory.machine.name}`}
@@ -1530,7 +1462,7 @@ export function SkilloomApp({
           {tiny ? (
             <Text color={color.accent}>{view} · Tab switch</Text>
           ) : (
-            ["Library", "Machines", "Changes", "Settings"].map((name, i) => (
+            ["Library", "Changes", "Settings"].map((name, i) => (
               <Text
                 key={name}
                 color={view === name ? color.accent : color.muted}
@@ -1542,6 +1474,14 @@ export function SkilloomApp({
           )}
         </Text>
       </Box>
+      {showLibrarySync && (
+        <Box paddingX={1} justifyContent="space-between">
+          <Text color={color.accent} bold wrap="truncate-end">
+            s Sync {safeText(inventory.machine.name)}
+          </Text>
+          {!tiny && <Text dimColor>Review before applying</Text>}
+        </Box>
+      )}
       {view === "Library" && (
         <>
           <Box paddingX={1}>
@@ -1628,7 +1568,6 @@ export function SkilloomApp({
             <KeyHint k="g">scope</KeyHint>
             <KeyHint k="o">ownership</KeyHint>
             <KeyHint k="x">clear filters</KeyHint>
-            <KeyHint k="s">review sync</KeyHint>
           </Box>
         )}
     </Box>

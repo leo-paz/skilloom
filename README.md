@@ -35,7 +35,7 @@ The Library combines global and project skills across local checkouts and publis
 
 | Key | Action |
 | --- | --- |
-| `1`–`4`, `Tab`, or `Shift-Tab` | Switch views directly, forward, or backward |
+| `1`–`3`, `Tab`, or `Shift-Tab` | Switch views directly, forward, or backward |
 | `/` | Search the library |
 | `↑` / `↓` or `j` / `k` | Select a skill |
 | `←` / `→` | Cycle machines in Results; move the cursor while editing search |
@@ -52,7 +52,9 @@ The Library combines global and project skills across local checkouts and publis
 
 Settings provides workspace setup, profile creation or copying, this machine's profile assignment, connection to shared Git storage, and migration review. Use ↑/↓ and Enter to open a Settings action; Escape cancels and keeps your selection. The Changes view lists the saved plan: Enter on a change opens its details, while Enter on **Review sync** (or `s`) checks current installations before review. Sync and migration reviews require `y` to apply and accept `n` or Escape to cancel. Saving a requirement or changing a profile does not install skills; review sync when ready.
 
-Machines shows available observations, including missing or stale data. Use ↑/↓ to select a machine and Enter to browse its skills. Escape returns from skill details to results, then back to the selected machine. Escape from a secondary view returns to Library. Refreshing here scans the current computer. Run `observe --publish` or `sync` on another machine to update its published state.
+Switch machines directly in Library with ←/→. Remote skills are published observations; browsing them does not change the sync target. The prominent **s Sync [machine name]** action starts a fresh review for this computer from Library. Escape cancels back to the same search, filters, and selected skill. Run `observe --publish` or `sync` on another machine to update its published state.
+
+The views are **1 Library**, **2 Changes**, and **3 Settings**. Changes is available for inspecting the saved plan; you do not need to visit it to start a sync.
 
 Use `npx skilloom@canary` instead if you prefer Node. Stable releases use `@latest`.
 
@@ -289,7 +291,7 @@ Managed mode uses the user's existing Git credentials and permits only fast-forw
 - `connect REPOSITORY` migrates local configuration into shared Git storage with a backup.
 - `sync [--dry-run] [--yes]` reconciles and verifies this machine, then publishes its observation when connected.
 - `inventory [--cached]` reports full inventory plus filterable local and remote occurrence records.
-- `tui` opens the full-screen library, machine observations, changes, and settings.
+- `tui` opens the full-screen library, changes, and settings.
 - `migrate --dry-run` previews legacy ownership repairs; `--yes --expect FINGERPRINT` applies a reviewed preview.
 - `source verify NAME --source REPOSITORY` verifies local source provenance.
 - `add`, `edit`, `move`, and `remove` atomically edit global-profile or personal-project policy.

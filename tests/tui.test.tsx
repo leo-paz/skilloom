@@ -200,7 +200,7 @@ describe("full-screen skill library", () => {
     const api = backend();
     const app = mount(120, api);
     await tick();
-    app.stdin.write("4");
+    app.stdin.write("3");
     await tick();
     app.stdin.write("u");
     await tick();
@@ -462,34 +462,38 @@ describe("full-screen skill library", () => {
     await tick();
     expect(app.lastFrame()).toContain("Search: codereview");
   });
-  it("selects a machine, browses its skills, and returns through details to the same machine", async () => {
-    const app = mount(80);
-    await tick();
-    app.stdin.write("2");
-    await tick();
-    expect(app.lastFrame()).not.toContain("Search:");
-    app.stdin.write("\u001b[B");
-    await tick();
-    expect(app.lastFrame()).toContain("› Studio");
-    app.stdin.write("\r");
-    await tick();
-    expect(app.lastFrame()).toContain("‹ Studio ›");
-    expect(app.lastFrame()).toContain("remote-research");
-    app.stdin.write("\r");
-    await tick();
-    app.stdin.write("\u001b");
-    await tick();
-    expect(app.lastFrame()).toContain("Results");
-    app.stdin.write("\u001b");
-    await tick();
-    expect(app.lastFrame()).toContain("› Studio");
-    expect(app.lastFrame()).not.toContain("Results");
-  });
+  it.each([40, 100])(
+    "starts a local sync directly from Library at %i columns and preserves remote browsing on cancel",
+    async (width) => {
+      const api = backend();
+      const app = mount(width, api);
+      await tick();
+      expect(app.lastFrame()).toContain("s Sync Workstation");
+      expect(app.lastFrame()).not.toContain("2 Machines");
+      app.stdin.write("\u001b[D");
+      await tick();
+      expect(app.lastFrame()).toContain("Studio");
+      expect(app.lastFrame()).toContain("s Sync Workstation");
+      app.stdin.write("s");
+      await tick();
+      expect(api.execute).toHaveBeenCalledWith(
+        ["sync", "--dry-run"],
+        expect.any(Function),
+      );
+      expect(app.lastFrame()).toContain("Review local sync");
+      app.stdin.write("\u001b");
+      await tick();
+      expect(app.lastFrame()).toContain("Results");
+      expect(app.lastFrame()).toContain("remote-research");
+      expect(app.lastFrame()).toContain("Studio");
+      expect(api.execute).toHaveBeenCalledTimes(1);
+    },
+  );
   it("opens settings with arrows and Enter, cancels back to selection, and reverses tabs", async () => {
     const api = backend();
     const app = mount(40, api);
     await tick();
-    app.stdin.write("4");
+    app.stdin.write("3");
     await tick();
     expect(app.lastFrame()).toContain("› Workspace setup");
     app.stdin.write("\u001b[B");
@@ -507,7 +511,7 @@ describe("full-screen skill library", () => {
     expect(app.lastFrame()).toContain("Review sync");
     app.stdin.write("\u001b[Z");
     await tick();
-    expect(app.lastFrame()).toContain("› Workstation");
+    expect(app.lastFrame()).toContain("Results");
   });
   it("opens saved change details without applying, and Enter on Review sync obtains a fresh preview", async () => {
     const inventory = inventoryFixture();
@@ -534,7 +538,7 @@ describe("full-screen skill library", () => {
     );
     mounted.push(app);
     await tick();
-    app.stdin.write("3");
+    app.stdin.write("2");
     await tick();
     expect(app.lastFrame()).toContain("› Review sync");
     app.stdin.write("\u001b[B");
