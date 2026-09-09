@@ -258,8 +258,9 @@ def exercise(executable, home, width, height):
     try:
         terminal.wait("initial populated library", lambda text: "alpha-review" in text and "bravo-writing" in text)
         assert terminal.screen.alternate, "Dashboard did not enter alternate screen"
-        assert "Invoke" in terminal.screen.text() and "Evidence" in terminal.screen.text(), "Metadata column headers missing"
-        assert "Both" in terminal.screen.text() and ("OAI" if width < 65 else "OpenAI") in terminal.screen.text(), "Declared mode or observed harness missing"
+        assert "Invoke" not in terminal.screen.text() and "Evidence" not in terminal.screen.text(), "Metadata still clutters the library"
+        if width >= 65:
+            assert "Ownership" in terminal.screen.text() and "Machines" in terminal.screen.text(), "Library columns missing"
         terminal.wait("raw input enabled", lambda _: not (termios.tcgetattr(terminal.slave)[3] & termios.ICANON))
         terminal.send(b"\x1b[C", "right selects local machine", lambda text: "‹ PTY Mac ›" in text)
         terminal.send(b"\x1b[D", "left returns all machines", lambda text: "‹ All machines ›" in text)

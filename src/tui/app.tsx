@@ -11,7 +11,6 @@ import {
   observedLabel,
   ownershipLabel,
   safeText,
-  usageLabel,
 } from "./catalog.js";
 
 import { SelectionMenu } from "./selection-menu.js";
@@ -852,7 +851,7 @@ export function SkilloomApp({
   );
   const skillColumnWidth = Math.max(
     8,
-    (narrow ? size.width : Math.floor(size.width * 0.7)) - 4 - (tiny ? 18 : 43),
+    (narrow ? size.width : Math.floor(size.width * 0.7)) - 4 - (tiny ? 0 : 22),
   );
   const pageSize = Math.max(1, bodyHeight - 4);
   useEffect(() => {
@@ -1602,10 +1601,6 @@ export function SkilloomApp({
           "s review sync · y apply in review",
           "a add · d remove · v verify source",
           "Details: Esc results · ↑↓ scroll",
-          "Invoke: Manual / Auto / Both / ? unknown",
-          "Mixed varies; Partial has unknowns",
-          "Evidence: verified installed-path reads",
-          "Unscanned / Partial / No match",
           "?/Esc close help · q quit",
         ].map((x) => (
           <Line key={x}>{x}</Line>
@@ -1768,15 +1763,9 @@ export function SkilloomApp({
                 <Text dimColor>Ownership</Text>
               </Box>
             )}
-            <Box width={tiny ? 8 : 10}>
-              <Text dimColor>Invoke</Text>
-            </Box>
-            <Box width={tiny ? 10 : 17}>
-              <Text dimColor>Evidence</Text>
-            </Box>
             {!tiny && (
-              <Box width={4}>
-                <Text dimColor>On</Text>
+              <Box width={10}>
+                <Text dimColor>Machines</Text>
               </Box>
             )}
           </Box>
@@ -1812,18 +1801,8 @@ export function SkilloomApp({
                     </Text>
                   </Box>
                 )}
-                <Box width={tiny ? 8 : 10}>
-                  <Text color={color.muted} wrap="truncate-end">
-                    {invocationLabel(row.invocation)}
-                  </Text>
-                </Box>
-                <Box width={tiny ? 10 : 17}>
-                  <Text color={color.muted} wrap="truncate-end">
-                    {usageLabel(row, tiny)}
-                  </Text>
-                </Box>
                 {!tiny && (
-                  <Box width={4}>
+                  <Box width={10}>
                     <Text color={color.muted}>{row.machines.length}</Text>
                   </Box>
                 )}
@@ -1944,11 +1923,13 @@ export function SkilloomApp({
                   notice ||
                   (view !== "Library"
                     ? " "
-                    : inventory?.skillUsage
-                      ? `Evidence ${evidenceMachines.filter((machine) => machine.status !== "unscanned").length}/${evidenceMachines.length} machines collected · r refresh local`
-                      : inventory?.cached
-                        ? "Metadata not collected · r refresh"
-                        : "Installation changes require review."),
+                    : inventory && !details
+                      ? "r refresh inventory"
+                      : inventory?.skillUsage
+                        ? `Evidence ${evidenceMachines.filter((machine) => machine.status !== "unscanned").length}/${evidenceMachines.length} machines collected · r refresh local`
+                        : inventory?.cached
+                          ? "Metadata not collected · r refresh"
+                          : "Installation changes require review."),
           )}
         </Text>
       </Box>

@@ -68,22 +68,29 @@ describe("full-screen skill library", () => {
     finish(enriched);
     await tick();
     expect(app.lastFrame()).toContain("› design-system");
-    expect(app.lastFrame()).toContain("Both");
     expect(app.lastFrame()).not.toContain("Loading skill metadata");
+    app.stdin.write("\u001b[A");
+    await tick();
+    app.stdin.write("i");
+    await tick();
+    expect(app.lastFrame()).toContain("Manual + automatic");
     expect(api.load).not.toHaveBeenCalled();
     expect(api.execute).not.toHaveBeenCalled();
     expect(api.enrich).toHaveBeenCalledTimes(1);
   });
   it.each([40, 100, 140])(
-    "shows declared invocation and observed usage columns at %i columns",
+    "keeps metadata in details and the library focused on skills at %i columns",
     async (width) => {
       const api = backend();
       const app = mount(width, api);
       await tick();
-      expect(app.lastFrame()).toContain("Invoke");
-      expect(app.lastFrame()).toContain("Evidence");
-      expect(app.lastFrame()).toContain("Both");
-      expect(app.lastFrame()).toContain(width < 65 ? "OAI" : "OpenAI");
+      expect(app.lastFrame()).toContain("code-review");
+      expect(app.lastFrame()).not.toContain("Invoke");
+      expect(app.lastFrame()).not.toContain("Evidence");
+      if (width >= 65) {
+        expect(app.lastFrame()).toContain("Ownership");
+        expect(app.lastFrame()).toContain("Machines");
+      }
       expect(api.execute).not.toHaveBeenCalled();
       app.stdin.write("\r");
       await tick();
