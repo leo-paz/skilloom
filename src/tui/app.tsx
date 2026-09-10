@@ -71,7 +71,7 @@ const color = {
   error: "#E58C8C",
 };
 const scopes = ["all", "global", "project"];
-const ownerships = ["all", "managed", "git-owned", "unmanaged", "unknown"];
+const ownerships = ["all", "skilloom", "git", "external", "unknown"];
 function cycle(values: string[], value: string, direction = 1): string {
   return values[
     (values.indexOf(value) + direction + values.length) % values.length
@@ -357,13 +357,7 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
         record.installed ? color.good : color.warning,
       ),
     );
-    installation.push(
-      ...field(
-        "Ownership",
-        owner === "Managed" ? "Skilloom managed" : owner,
-        columnWidth,
-      ),
-    );
+    installation.push(...field("Ownership", owner, columnWidth));
     if (record.desired)
       installation.push(...field("Policy", "Required", columnWidth));
     installation.push(
@@ -671,8 +665,7 @@ function Preview({
       tone: color.muted,
     },
     {
-      text:
-        entry.ownership === "Managed" ? "Managed by Skilloom" : entry.ownership,
+      text: entry.owners.join(" · "),
       tone: color.muted,
     },
     { text: " " },
@@ -1917,14 +1910,12 @@ export function SkilloomApp({
                 </Box>
                 <Box width={tiny ? 10 : 12}>
                   <Text
-                    color={
-                      offset + i === index
-                        ? color.selectedText
-                        : row.invocation === "unknown" ||
-                            row.invocation === "partial"
-                          ? color.muted
-                          : undefined
-                    }
+                    {...(offset + i === index
+                      ? { color: color.selectedText }
+                      : row.invocation === "unknown" ||
+                          row.invocation === "partial"
+                        ? { color: color.muted }
+                        : {})}
                     bold={offset + i === index}
                     wrap="truncate-end"
                   >
@@ -1938,7 +1929,7 @@ export function SkilloomApp({
                       color={
                         offset + i === index
                           ? color.selectedText
-                          : row.ownership === "Unmanaged"
+                          : row.ownership === "External"
                             ? color.warning
                             : color.muted
                       }

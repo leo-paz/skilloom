@@ -9,6 +9,7 @@ export interface LibraryEntry {
   occurrences: InventoryOccurrence[];
   sources: string[];
   ownership: string;
+  owners: string[];
   machines: string[];
   invocation: string;
   usedBy: string[];
@@ -29,10 +30,10 @@ export interface LibraryFilters {
 }
 export function ownershipLabel(skill: InventoryOccurrence): string {
   return skill.ownership === "repository"
-    ? "Git-owned"
+    ? "Git"
     : skill.managed
-      ? "Managed"
-      : "Unmanaged";
+      ? "Skilloom"
+      : "External";
 }
 function group(
   records: InventoryOccurrence[],
@@ -51,7 +52,11 @@ function group(
           }),
         ),
       ];
-      const owners = [...new Set(occurrences.map(ownershipLabel))];
+      const presentOwners = new Set(occurrences.map(ownershipLabel));
+      // Summarize the strongest ownership boundary; preserve all owners for details.
+      const owners = ["Git", "Skilloom", "External"].filter((owner) =>
+        presentOwners.has(owner),
+      );
       return {
         name,
         usageMachines,
@@ -72,7 +77,8 @@ function group(
         sources: [
           ...new Set(occurrences.map((x) => x.source ?? "Unknown source")),
         ],
-        ownership: owners.length === 1 ? owners[0]! : "Mixed",
+        ownership: owners[0]!,
+        owners,
         machines: [...new Set(occurrences.map((x) => x.machine.id))],
       };
     })
