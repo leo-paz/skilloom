@@ -1,6 +1,7 @@
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import React, { useEffect, useMemo, useState } from "react";
 import wrapAnsi from "wrap-ansi";
+import { installationDirectoryLabel } from "../core/installation-directories.js";
 import type { InventoryProgress, MachineInventory } from "../core/types.js";
 import {
   buildLibrary,
@@ -278,6 +279,7 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       record.source,
       record.agents,
       record.detectedAgents,
+      record.installationDirectories,
       record.ownership,
       record.managed,
       record.installed,
@@ -371,6 +373,28 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
         record.source ? color.repository : color.muted,
       ),
     );
+    installation.push({ text: " " }, { text: "Installed in", bold: true });
+    const directories = record.installationDirectories;
+    for (const label of directories?.length
+      ? [...new Set(directories.map(installationDirectoryLabel))]
+      : [
+          !record.installed
+            ? "Not installed"
+            : directories
+              ? "No verified directory"
+              : "Not recorded in this snapshot",
+        ])
+      installation.push(
+        ...wrapLines(
+          [
+            {
+              text: label,
+              tone: directories?.length ? undefined : color.muted,
+            },
+          ],
+          columnWidth,
+        ),
+      );
     for (const path of [...new Set(paths)])
       installation.push(...field("Checkout", path, columnWidth));
     if (!paths.length && record.checkoutId)
@@ -417,13 +441,6 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
           color.muted,
         ),
       );
-    behavior.push(
-      ...field(
-        "Available to",
-        record.agents.join(", ") || "Unknown",
-        columnWidth,
-      ),
-    );
     for (const variant of variants.filter(
       (variant) =>
         variant.status !== "unsupported" &&
@@ -454,15 +471,6 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
         ...field(
           "Unknown for",
           unsupported.map((variant) => variant.agent).join(", "),
-          columnWidth,
-          color.muted,
-        ),
-      );
-    if (record.detectedAgents)
-      behavior.push(
-        ...field(
-          "Detected here",
-          record.detectedAgents.join(", "),
           columnWidth,
           color.muted,
         ),
@@ -828,7 +836,11 @@ export function SkilloomApp({
     if (
       inventory.skillUsage?.version === 2 &&
       inventory.skillUsage.history !== undefined &&
-      localSkills.every((skill) => !skill.installed || skill.metadata)
+      localSkills.every(
+        (skill) =>
+          !skill.installed ||
+          (skill.metadata && skill.installationDirectories !== undefined),
+      )
     ) {
       setEnriching(false);
       return;

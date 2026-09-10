@@ -230,6 +230,7 @@ def fixture(home):
     def skill(name, **extra):
         value = dict(name=name, source="acme/skills", agents=["codex"], scope="global", installed=True,
                      desired=False, managed=False, ownership="personal", reasons=[],
+                     installationDirectories=[dict(base="home", path=f".agents/skills/{name}")],
                      metadata=dict(source="skill-declaration", invocation="unknown", variants=[]))
         value.update(extra)
         return value

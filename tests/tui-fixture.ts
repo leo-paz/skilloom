@@ -23,6 +23,10 @@ export const inventoryFixture = (): MachineInventory => ({
     {
       name: "code-review",
       usagePathIds: ["a".repeat(64)],
+      installationDirectories: [
+        { base: "home", path: ".agents/skills/code-review" },
+        { base: "home", path: ".claude/skills/code-review" },
+      ],
       metadata: {
         source: "skill-declaration",
         invocation: "both",
@@ -49,6 +53,9 @@ export const inventoryFixture = (): MachineInventory => ({
           skills: [
             {
               name: "design-system",
+              installationDirectories: [
+                { base: "project", path: ".claude/skills/design-system" },
+              ],
               source: null,
               agents: ["claude-code"],
               scope: "project",

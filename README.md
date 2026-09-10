@@ -102,6 +102,9 @@ Local records preserve each checkout path. New remote snapshots preserve separat
 
 Scans inspect up to four checkouts concurrently and report progress on stderr, keeping JSON stdout separate. Agent coverage follows the pinned upstream installation model: a verified canonical `.agents/skills` installation covers upstream universal agents in either scope. `agents` describes installation coverage; `detectedAgents` preserves the upstream-reported subset. Coverage does not claim that each agent is installed or running.
 
+The skill details view shows **Installed in** folders instead of expanding agent coverage into an availability list. Locations are verified on the originating machine, including matching symlink aliases; they are not inferred from agent names. `~` means that machine's home directory (including the Windows user profile), and `./` means the displayed project checkout. Display paths use `/` on every platform. Custom roots outside the home can appear as `<CODEX_HOME>`, `<CLAUDE_CONFIG_DIR>`, or `<PI_CODING_AGENT_DIR>`; these are labels, not shell commands. Other external locations appear as `Custom directory (path private)`. Absolute home paths, checkout roots, and symlink targets are not published. Older remote snapshots show `Not recorded in this snapshot` until that machine refreshes and publishes.
+
+
 For supported trace formats, collection limits, and the next steps toward fuller history, see [the usage evidence research](docs/research/2026-09-09-skill-usage-history.md).
 
 ## Add and change skills

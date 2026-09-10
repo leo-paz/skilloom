@@ -1,3 +1,4 @@
+import type { InstallationDirectory } from "./installation-directories.js";
 import type { SkillMetadata } from "./skill-metadata.js";
 import type { SkillUsageScan } from "./skill-usage.js";
 export type Scope = "global" | "project";
@@ -76,6 +77,7 @@ export interface LocalMachine {
 }
 
 export interface InventorySkill {
+  installationDirectories?: InstallationDirectory[] | undefined;
   path?: string | undefined;
   usagePathIds?: string[] | undefined;
   metadata?: SkillMetadata | undefined;

@@ -541,6 +541,9 @@ describe("CLI", () => {
                 managed: false,
                 reasons: [],
                 ownership: "repository",
+                installationDirectories: [
+                  { base: "project", path: ".agents/skills/review" },
+                ],
               },
             ],
           },
@@ -569,7 +572,15 @@ describe("CLI", () => {
         projects: [
           {
             name: "Core",
-            skills: [{ name: "review", ownership: "repository" }],
+            skills: [
+              {
+                name: "review",
+                ownership: "repository",
+                installationDirectories: [
+                  { base: "project", path: ".agents/skills/review" },
+                ],
+              },
+            ],
           },
         ],
       },

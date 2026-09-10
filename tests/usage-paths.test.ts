@@ -80,6 +80,10 @@ describe("local usage path attribution", () => {
     await symlink(join(canonical, ".."), alias);
     const result = await prepareUsagePaths(f.inventory, f.env);
     expect(f.a.usagePathIds).toHaveLength(1);
+    expect(f.a.installationDirectories).toEqual([
+      { base: "project", path: ".agents/skills/review" },
+      { base: "project", path: ".claude/skills/review" },
+    ]);
     expect(result[0]?.paths).toEqual(
       [canonical, join(alias, "SKILL.md")].sort(),
     );

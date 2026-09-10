@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  type InstallationDirectory,
+  installationDirectory,
+} from "./installation-directories.js";
 import type { InventorySkill, MachineInventory } from "./types.js";
 
 export interface KnownUsagePaths {
@@ -27,7 +31,7 @@ function candidates(
   // Only exact recognized installation roots are candidates; never search a workspace
   // for arbitrary matching basenames. Explicit upstream installation paths are trusted.
   const global = skill.scope === "global";
-  const base = global ? env.HOME : cwd;
+  const base = global ? env.HOME || env.USERPROFILE : cwd;
   const roots: string[] = [];
   if (base) roots.push(join(base, ".agents", "skills"));
   for (const [override, fallback] of [
@@ -44,7 +48,7 @@ function candidates(
       base ? join(base, ".pi", ...(global ? ["agent"] : [])) : undefined,
     ],
   ]) {
-    const directory = override || fallback;
+    const directory = override?.trim() || fallback;
     if (directory) roots.push(join(directory, "skills"));
   }
   for (const root of roots) paths.push(join(root, skill.name, "SKILL.md"));
@@ -102,14 +106,22 @@ export async function prepareUsagePaths(
   };
   const prepared = new Map<
     InventorySkill,
-    { ids: Set<string>; paths: Set<string> }
+    {
+      ids: Set<string>;
+      paths: Set<string>;
+      directories: Map<string, InstallationDirectory>;
+    }
   >();
   let next = 0;
   const worker = async () => {
     while (next < entries.length) {
       signal?.throwIfAborted();
       const entry = entries[next++]!;
-      const result = { ids: new Set<string>(), paths: new Set<string>() };
+      const result = {
+        ids: new Set<string>(),
+        paths: new Set<string>(),
+        directories: new Map<string, InstallationDirectory>(),
+      };
       const paths = candidates(entry.skill, entry.cwd, env);
       const authoritative =
         entry.skill.path && paths[0] ? await inspect(paths[0]) : undefined;
@@ -117,6 +129,8 @@ export async function prepareUsagePaths(
         const canonical = await inspect(path);
         if (!canonical || (entry.skill.path && canonical !== authoritative))
           continue;
+        const directory = installationDirectory(dirname(path), entry.cwd, env);
+        result.directories.set(JSON.stringify(directory), directory);
         result.ids.add(createHash("sha256").update(canonical).digest("hex"));
         result.paths.add(path);
         result.paths.add(canonical);
@@ -132,6 +146,9 @@ export async function prepareUsagePaths(
   for (const { skill } of entries) {
     const result = prepared.get(skill)!;
     skill.usagePathIds = [...result.ids].sort();
+    skill.installationDirectories = [...result.directories.values()].sort(
+      (a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)),
+    );
     if (!result.paths.size) continue;
     const paths = grouped.get(skill.name) ?? new Set<string>();
     for (const path of result.paths) paths.add(path);

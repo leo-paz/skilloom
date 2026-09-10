@@ -31,6 +31,17 @@ const mount = (width = 120, api = backend()) => {
 };
 
 describe("full-screen skill library", () => {
+  it("shows verified installation folders rather than expanded agent availability", async () => {
+    const app = mount(140);
+    await tick();
+    app.stdin.write("i");
+    await tick();
+    expect(app.lastFrame()).toContain("Installed in");
+    expect(app.lastFrame()).toContain("~/.agents/skills/code-review");
+    expect(app.lastFrame()).toContain("~/.claude/skills/code-review");
+    expect(app.lastFrame()).not.toContain("Available to");
+    expect(app.lastFrame()).not.toContain("Detected here");
+  });
   it("hydrates an older snapshot without blocking selection or rescanning inventory", async () => {
     const old = inventoryFixture();
     delete old.skillUsage;
@@ -66,9 +77,10 @@ describe("full-screen skill library", () => {
       variants: [],
     };
     finish(enriched);
-    await tick();
+    await vi.waitFor(() => {
+      expect(app.lastFrame()).not.toContain("Loading skill metadata");
+    });
     expect(app.lastFrame()).toContain("› design-system");
-    expect(app.lastFrame()).not.toContain("Loading skill metadata");
     app.stdin.write("\u001b[A");
     await tick();
     app.stdin.write("i");
@@ -96,6 +108,10 @@ describe("full-screen skill library", () => {
       expect(api.execute).not.toHaveBeenCalled();
       app.stdin.write("\r");
       await tick();
+      if (width < 100) {
+        app.stdin.write("\u001b[B\u001b[B\u001b[B\u001b[B");
+        await tick();
+      }
       expect(app.lastFrame()).toContain("1 session");
       app.stdin.write("\u001b[F");
       await tick();

@@ -12,6 +12,7 @@ import {
   loadUserConfig,
   resolveConfigPaths,
 } from "../core/config.js";
+import { installationDirectorySchema } from "../core/installation-directories.js";
 import { buildInventory } from "../core/inventory.js";
 import { type InventoryQuery, queryInventory } from "../core/query.js";
 import { skillMetadataSchema } from "../core/skill-metadata.js";
@@ -25,6 +26,10 @@ import { prepareUsagePaths } from "../core/usage-paths.js";
 import type { CliRuntime } from "./runtime.js";
 
 const observedSkill = z.object({
+  installationDirectories: z
+    .array(installationDirectorySchema)
+    .max(128)
+    .optional(),
   metadata: skillMetadataSchema.optional(),
   usagePathIds: z.array(z.string().regex(/^[a-f0-9]{64}$/)).optional(),
   name: z.string(),
