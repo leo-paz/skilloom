@@ -1,6 +1,7 @@
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import React, { useEffect, useMemo, useState } from "react";
 import wrapAnsi from "wrap-ansi";
+import type { InstallationDiagnosticsReport } from "../core/installation-diagnostics.js";
 import { installationDirectoryLabel } from "../core/installation-directories.js";
 import type { InventoryProgress, MachineInventory } from "../core/types.js";
 import {
@@ -14,6 +15,7 @@ import {
   ownershipLabel,
   safeText,
 } from "./catalog.js";
+import { InstallationChecks } from "./installation-checks.js";
 import { SelectionMenu } from "./selection-menu.js";
 import { sessionUsageSummary } from "./session-summary.js";
 
@@ -22,6 +24,9 @@ export interface CommandResult {
   value: Record<string, unknown>;
 }
 export interface DashboardBackend {
+  inspectInstallations?: (
+    inventory?: MachineInventory,
+  ) => Promise<InstallationDiagnosticsReport>;
   collectHistory?: (inventory: MachineInventory) => Promise<MachineInventory>;
   enrich?: (inventory: MachineInventory) => Promise<MachineInventory>;
   cancelRead?: () => Promise<void>;
@@ -760,6 +765,8 @@ export function SkilloomApp({
   const [ownership, setOwnership] = useState("all");
   const [index, setIndex] = useState(0);
   const [details, setDetails] = useState(false);
+  const [installationChecks, setInstallationChecks] = useState(false);
+
   const [enriching, setEnriching] = useState(false);
   const [detailOffset, setDetailOffset] = useState(0);
   const [settingsIndex, setSettingsIndex] = useState(0);
@@ -866,7 +873,14 @@ export function SkilloomApp({
     };
   }, [backend, inventory]);
   useEffect(() => {
-    if (!inventory || busy || enriching || !backend.collectHistory) return;
+    if (
+      !inventory ||
+      busy ||
+      enriching ||
+      installationChecks ||
+      !backend.collectHistory
+    )
+      return;
     let active = true;
     const timer = setTimeout(
       () => {
@@ -901,7 +915,7 @@ export function SkilloomApp({
       active = false;
       clearTimeout(timer);
     };
-  }, [backend, inventory, busy, enriching]);
+  }, [backend, inventory, busy, enriching, installationChecks]);
   const entries = useMemo(
     () => (inventory ? buildLibrary(inventory) : []),
     [inventory],
@@ -950,6 +964,7 @@ export function SkilloomApp({
     inventory &&
     !searching &&
     !details &&
+    !installationChecks &&
     !form &&
     !review &&
     !outcome &&
@@ -957,7 +972,7 @@ export function SkilloomApp({
   const bodyHeight = Math.max(
     5,
     size.height -
-      (view === "Library" && !details ? 8 : 6) -
+      (installationChecks ? 2 : view === "Library" && !details ? 8 : 6) -
       (showLibrarySync ? 1 : 0),
   );
   const skillColumnWidth = Math.max(
@@ -976,6 +991,7 @@ export function SkilloomApp({
   const goToView = (next: string) => {
     setView(next);
     setDetails(false);
+    setInstallationChecks(false);
     setNotice("");
   };
   const execute = async (args: string[], refresh = true) => {
@@ -1257,6 +1273,10 @@ export function SkilloomApp({
       exit();
       return;
     }
+    if (installationChecks) {
+      if (input === "q") exit();
+      return;
+    }
     if (busy) return;
     if (outcome) {
       if (key.escape || key.return || input === "q") {
@@ -1430,6 +1450,10 @@ export function SkilloomApp({
     if (key.escape) {
       if (details) setDetails(false);
       else if (view !== "Library") goToView("Library");
+      return;
+    }
+    if (input === "l" && view === "Library" && backend.inspectInstallations) {
+      setInstallationChecks(true);
       return;
     }
     if (input === "q") {
@@ -1711,6 +1735,7 @@ export function SkilloomApp({
           "x clear filters · r refresh",
           "s review sync · y apply in review",
           "a add · d remove · v verify source",
+          "l installation checks on this machine",
           "Details: Esc results · ↑↓ scroll",
           "?/Esc close help · q quit",
         ].map((x) => (
@@ -1778,6 +1803,16 @@ export function SkilloomApp({
           </Text>
         </Box>
       </Box>
+    );
+  else if (installationChecks && backend.inspectInstallations)
+    content = (
+      <InstallationChecks
+        scan={() => backend.inspectInstallations!(inventory)}
+        onClose={() => setInstallationChecks(false)}
+        width={size.width}
+        height={bodyHeight}
+        machineName={inventory?.machine.name ?? "This computer"}
+      />
     );
   else if (!inventory)
     content = (
@@ -2000,10 +2035,12 @@ export function SkilloomApp({
           <Text color={color.accent} bold wrap="truncate-end">
             s Sync {safeText(inventory.machine.name)}
           </Text>
-          {!tiny && <Text dimColor>Review before applying</Text>}
+          {!tiny && backend.inspectInstallations && (
+            <Text color={color.accent}>l Check installations</Text>
+          )}
         </Box>
       )}
-      {view === "Library" && !details && (
+      {view === "Library" && !details && !installationChecks && (
         <>
           <Box paddingX={1}>
             <Text
@@ -2045,45 +2082,50 @@ export function SkilloomApp({
       <Box height={bodyHeight} overflow="hidden" flexDirection="column">
         {content}
       </Box>
-      <Box paddingX={1}>
-        <Text
-          wrap="truncate-end"
-          color={
-            busy
-              ? color.accent
-              : error
-                ? color.error
-                : notice
-                  ? color.good
-                  : color.muted
-          }
-        >
-          {safeText(
-            busy
-              ? progress
-              : enriching
-                ? "Loading skill metadata · browsing stays available"
-                : error ||
-                  notice ||
-                  (view !== "Library"
-                    ? " "
-                    : inventory && !details
-                      ? "r refresh inventory"
-                      : inventory?.skillUsage
-                        ? `Evidence ${evidenceMachines.filter((machine) => machine.status !== "unscanned").length}/${evidenceMachines.length} machines collected · r refresh local`
-                        : inventory?.cached
-                          ? "Metadata not collected · r refresh"
-                          : "Installation changes require review."),
-          )}
-        </Text>
-      </Box>
-      <Box paddingX={1}>
-        <Text wrap="truncate-end" dimColor>
-          {footer}
-        </Text>
-      </Box>
+      {!installationChecks && (
+        <Box paddingX={1}>
+          <Text
+            wrap="truncate-end"
+            color={
+              busy
+                ? color.accent
+                : error
+                  ? color.error
+                  : notice
+                    ? color.good
+                    : color.muted
+            }
+          >
+            {safeText(
+              busy
+                ? progress
+                : enriching
+                  ? "Loading skill metadata · browsing stays available"
+                  : error ||
+                    notice ||
+                    (view !== "Library"
+                      ? " "
+                      : inventory && !details
+                        ? "l check local installations · r refresh inventory"
+                        : inventory?.skillUsage
+                          ? `Evidence ${evidenceMachines.filter((machine) => machine.status !== "unscanned").length}/${evidenceMachines.length} machines collected · r refresh local`
+                          : inventory?.cached
+                            ? "Metadata not collected · r refresh"
+                            : "Installation changes require review."),
+            )}
+          </Text>
+        </Box>
+      )}
+      {!installationChecks && (
+        <Box paddingX={1}>
+          <Text wrap="truncate-end" dimColor>
+            {footer}
+          </Text>
+        </Box>
+      )}
       {!tiny &&
         !details &&
+        !installationChecks &&
         !searching &&
         !form &&
         !review &&

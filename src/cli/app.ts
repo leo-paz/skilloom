@@ -74,12 +74,15 @@ Exit codes: 0 success, 1 migration preview blocker, 2 drift or unresolved verifi
             3 invalid/unavailable state, 4 execution/diagnostic failure, 5 cancellation or changed sync plan`;
 
 const commandHelp: Record<string, string> = {
+  doctor: `Usage: skilloom doctor [--installations] [--json] [--config PATH]
+
+Check runtime, dependencies and configuration. With --installations, inspect local installation entries without changing files, scanning logs, or contacting other machines. Exit 0 means the bounded scan completed within its stated scope, even with findings; exit 4 means inspection was incomplete.`,
   usage: `Usage: skilloom usage status|install|uninstall|refresh|backfill [--once] [--restart] [--max-seconds 1..180]|publish [--dry-run]
 
 Install hooks locally, refresh recent evidence, or resume history backfill. Backfill checkpoints after two minutes by default; run it again to continue. Ctrl-C pauses safely. Preview sharing with usage publish --dry-run, then publish with usage publish.`,
   tui: `Usage: skilloom [tui] [--config PATH]
 
-Open a full-screen skill library. Search with /, switch views with 1–4 or Tab, inspect with Enter, refresh with r, and review sync with s. Press ? for all keys.`,
+Open a full-screen skill library. Search with /, switch views with 1–3 or Tab, inspect with Enter, check local installations with l, refresh with r, and review sync with s. Press ? for all keys.`,
   migrate: `Usage: skilloom migrate [--dry-run] [--yes] [--expect FINGERPRINT] [--json]
 
 Review obsolete adoption requirements and ownership records with --dry-run. Apply with --yes and optionally --expect using preview.fingerprint from the dry run. A changed fingerprint refuses application. Migration preserves installed files and backs up configuration and state.`,

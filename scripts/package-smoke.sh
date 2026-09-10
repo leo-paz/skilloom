@@ -67,6 +67,9 @@ run_suite() (
   node -e 'const fs=require("fs");const result=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(!result.converged||result.completed.length)process.exit(1)' "$isolated_home/verified.json"
   "${command[@]}" observe --json
   "${command[@]}" doctor --json
+  ln -s "$isolated_home/unavailable-skill" "$isolated_home/.agents/skills/missing-fixture"
+  "${command[@]}" doctor --installations --json > "$isolated_home/installation-checks.json"
+  node -e 'const fs=require("fs");const result=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const link=process.argv[2];if(!result.ok||!result.installations.complete||!result.installations.entries.some(e=>e.path===link&&e.status==="target-missing")||!fs.lstatSync(link).isSymbolicLink())process.exit(1)' "$isolated_home/installation-checks.json" "$isolated_home/.agents/skills/missing-fixture"
   cd "$repository_root"
 )
 

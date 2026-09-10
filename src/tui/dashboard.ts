@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { render } from "ink";
 import { createElement } from "react";
+import { inspectLocalInstallations } from "../cli/doctor.js";
 import { loadCurrentInventory } from "../cli/inventory.js";
 import type { CliRuntime } from "../cli/runtime.js";
 import { syncMachine } from "../cli/sync.js";
@@ -58,6 +59,15 @@ export function createDashboardBackend(
   };
   return {
     cancelRead,
+    async inspectInstallations(inventory) {
+      return track(true, (signal) =>
+        inspectLocalInstallations(
+          { ...runtime, signal },
+          configPath,
+          inventory,
+        ),
+      );
+    },
     async shutdown() {
       stopping = true;
       await cancelRead();

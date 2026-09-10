@@ -251,6 +251,10 @@ def fixture(home):
                          globalSkills=[skill("remote-only")], projects=[])],
                      operations=[dict(kind="add", skill=dict(name="pending-fixture", source="acme/skills", scope="global", agents=["codex"]), reasons=["machine profile personal"])])
     (app / "inventory.json").write_text(json.dumps(inventory))
+    for agent in (".agents", ".claude"):
+        skills_dir = home / agent / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        (skills_dir / "missing-fixture").symlink_to(home / "unavailable/skill")
 
 
 def exercise(executable, home, width, height):
@@ -307,6 +311,17 @@ def exercise(executable, home, width, height):
         assert "s Sync PTY Mac" in terminal.screen.text(), "Library sync action is not visible"
         terminal.send(b"\x1b[D", "browse remote snapshot", lambda text: "remote-only" in text and "alpha-review" not in text)
         assert "s Sync PTY Mac" in terminal.screen.text(), "Sync target followed the remote browsing filter"
+        terminal.send(b"l", "local installation checks from remote Library", lambda text: "Installation checks" in text and "Target missing" in text and "Checking entries" not in text)
+        assert "PTY Mac" in terminal.screen.text() and "this machine only" in terminal.screen.text(), "Diagnostics followed remote machine filter"
+        terminal.send(b"\r", "exact missing-link details", lambda text: "directory entries" in text)
+        terminal.send(b"\x1b[F", "scroll to diagnostic explanation", lambda text: "Leave unchanged" in text)
+        terminal.send(b"\x1b", "return from finding", lambda text: "Target missing" in text and "Enter inspect" in text)
+        terminal.send(b"c", "diagnostic coverage", lambda text: "Scan coverage" in text)
+        terminal.send(b"\x1b", "return from coverage", lambda text: "Target missing" in text and "Enter inspect" in text)
+        terminal.send(b"r", "rescan installations", lambda text: "Target missing" in text and "Checking entries" not in text)
+        terminal.send(b"\x1b", "return to preserved remote Library", lambda text: "Results" in text and "remote-only" in text and "s Sync PTY Mac" in text)
+        for agent in (".agents", ".claude"):
+            assert os.readlink(home / agent / "skills/missing-fixture") == str(home / "unavailable/skill"), "Diagnostics changed an installation link"
         terminal.send(b"s", "sync directly from Library", lambda text: "Review local sync" in text and "No installation changes" in text)
         terminal.send(b"\x1b", "cancel sync back to remote Library", lambda text: "Results" in text and "remote-only" in text and "s Sync PTY Mac" in text)
         terminal.send(b"x", "reset machine filter explicitly", lambda text: "alpha-review" in text)

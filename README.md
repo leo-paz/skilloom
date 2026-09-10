@@ -69,6 +69,7 @@ Saved inventory renders immediately. Older snapshots missing metadata or history
 | `Enter` | Finish searching, or open the selected skill from Results |
 | `Esc` | Finish searching or return from details; keep search, filters and selection |
 | `i` | Open the selected skill’s full details (same as Enter) |
+| `l` | Open read-only installation checks for this computer; `r` checks again and Esc returns to the same Library selection and filters |
 | `m`, `g`, `o` | Cycle machine, scope, and ownership filters in Results |
 | `x` | Clear filters |
 | `r` | Refresh local inventory with scan progress |
@@ -332,7 +333,26 @@ Managed mode uses the user's existing Git credentials and permits only fast-forw
 - `update [SKILL] --scope global|project` delegates updates to the pinned skills executable.
 - `project add` and `project remove` edit shared `.skilloom.yaml` policy.
 - `config` manages profiles and machine selection.
-- `doctor` diagnoses the active runtime, Git, the pinned skills executable, project discovery, and configuration.
+- `doctor` diagnoses the active runtime, Git, the pinned skills executable, project discovery, and configuration. `doctor --installations` checks local installation paths without modifying skills or configuration.
+
+## Installation checks
+
+Open **Installation checks** with `l` in Library, or run:
+
+```sh
+skilloom doctor --installations
+skilloom doctor --installations --json
+```
+
+This is a read-only check of **the computer running Skilloom**, including when Library is displaying a remote machine’s saved snapshot. The view shows exact paths and filesystem observations such as a missing link target, an inaccessible entry, or a `SKILL.md` that is not a regular file. Press `r` to check again and Esc to return to the same Library filters and selection. It works before Skilloom setup and reports an unavailable machine identity without creating one.
+
+The bounded scan checks the pinned skills adapter’s supported global directories (including configured home overrides), supported skill directories in this computer’s cached checkout paths, and the current Git checkout. Cached checkout paths are used only when the saved machine identity matches this computer. It does not discover projects, contact remote machines or repositories, read usage traces, or publish observations. Unrecorded custom directories, nested skill namespaces, hidden metadata directories, inactive plugin caches and other projects are outside its scope. Directories without `SKILL.md` can be namespaces, so their presence alone is not treated as a defective installation. These checks inspect filesystem structure, not skill contents or loading behavior. Root coverage distinguishes absent roots, checked roots, aliases, and roots that could not be fully checked; absent roots alone are normal. Time and entry limits, cancellation, inaccessible paths and invalid saved context remain explicit limitations.
+
+A missing target is an observation, not proof that a link is obsolete. These checks do not recommend upgrades, consolidation, profile normalization, or deletion. Sources, updates and policy remain separate actions. No remove, restore or automatic cleanup command is included: exact-copy execution and reliable recovery need their own implementation and review.
+
+Checks have a two-second budget including saved-context reads, with limits of 5,000 entries and 10,000 candidate directories. Results explain when a limit stops the scan; they do not claim exhaustive coverage. A pending operating-system read may finish after the report returns. Link targets retain their original path expressions, because normalizing `..` can change their meaning when an intermediate directory is a symlink. Exact paths stay local and are not included in published machine observations. Native Windows filesystem behavior has not been validated; Windows path derivation has automated coverage.
+
+With `--installations`, exit **0** means the check completed within its declared scope, even if findings exist. Exit **4** means it was incomplete; inspect the findings and coverage to see what was checked and what was omitted. JSON uses the existing `{ ok, command }` envelope with an `installations` report containing machine identity, platform, observation time, exact findings and root coverage. Here `ok` reports completion, not that every installation is healthy. Plain `skilloom doctor` keeps its existing runtime, dependency and configuration checks.
 
 ## Development
 

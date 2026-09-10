@@ -3,6 +3,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type DashboardBackend, SkilloomApp } from "../src/tui/app.js";
 import { buildLibrary, filterLibrary } from "../src/tui/catalog.js";
+import { diagnosticsFixture } from "./installation-checks-fixture.js";
 import { inventoryFixture } from "./tui-fixture.js";
 
 const mounted: Array<ReturnType<typeof render>> = [];
@@ -31,6 +32,47 @@ const mount = (width = 120, api = backend()) => {
 };
 
 describe("full-screen skill library", () => {
+  it("checks this machine from a remote-filtered library and returns to the same search and selection", async () => {
+    const api = {
+      ...backend(),
+      inspectInstallations: vi.fn(
+        async (_inventory?: ReturnType<typeof inventoryFixture>) =>
+          diagnosticsFixture(),
+      ),
+    };
+    const app = mount(120, api);
+    await tick();
+    app.stdin.write("\u001b[C");
+    await tick();
+    app.stdin.write("\u001b[C");
+    await tick();
+    app.stdin.write("/");
+    await tick();
+    app.stdin.write("research");
+    await tick();
+    app.stdin.write("\r");
+    await tick();
+    expect(app.lastFrame()).toContain("› remote-research");
+    app.stdin.write("l");
+    await tick();
+    expect(app.lastFrame()).toContain("Installation checks");
+    expect(app.lastFrame()).toContain("Workstation · this machine only");
+    expect(api.inspectInstallations).toHaveBeenCalledOnce();
+    expect(api.inspectInstallations.mock.calls[0]?.[0]?.machine.id).toBe(
+      "local",
+    );
+    for (const key of ["s", "d", "v"]) {
+      app.stdin.write(key);
+      await tick();
+    }
+    expect(api.execute).not.toHaveBeenCalled();
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("› remote-research");
+    expect(app.lastFrame()).toContain("Studio");
+    expect(app.lastFrame()).toContain("Search: research");
+    expect(api.load).not.toHaveBeenCalled();
+  });
   it("shows verified installation folders rather than expanded agent availability", async () => {
     const app = mount(140);
     await tick();
