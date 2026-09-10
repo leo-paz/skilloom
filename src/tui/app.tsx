@@ -62,6 +62,8 @@ interface Form {
 }
 const color = {
   accent: "#77A7DF",
+  selection: "#25384F",
+  selectedText: "#E8F1FC",
   repository: "#C4B5E8",
   good: "#6FC1AD",
   warning: "#DDB66E",
@@ -1895,11 +1897,18 @@ export function SkilloomApp({
             </Box>
           ) : (
             rows.slice(offset, offset + pageSize).map((row, i) => (
-              <Box key={row.name}>
+              <Box
+                key={row.name}
+                backgroundColor={
+                  offset + i === index ? color.selection : undefined
+                }
+              >
                 <Box width={skillColumnWidth} paddingRight={1}>
                   <Text
                     wrap="truncate-end"
-                    {...(offset + i === index ? { color: color.accent } : {})}
+                    {...(offset + i === index
+                      ? { color: color.selectedText }
+                      : {})}
                     bold={offset + i === index}
                   >
                     {offset + i === index ? "› " : "  "}
@@ -1908,10 +1917,15 @@ export function SkilloomApp({
                 </Box>
                 <Box width={tiny ? 10 : 12}>
                   <Text
-                    {...(row.invocation === "unknown" ||
-                    row.invocation === "partial"
-                      ? { color: color.muted }
-                      : {})}
+                    color={
+                      offset + i === index
+                        ? color.selectedText
+                        : row.invocation === "unknown" ||
+                            row.invocation === "partial"
+                          ? color.muted
+                          : undefined
+                    }
+                    bold={offset + i === index}
                     wrap="truncate-end"
                   >
                     {invocationLabel(row.invocation)}
@@ -1922,9 +1936,11 @@ export function SkilloomApp({
                     <Text
                       wrap="truncate-end"
                       color={
-                        row.ownership === "Unmanaged"
-                          ? color.warning
-                          : color.muted
+                        offset + i === index
+                          ? color.selectedText
+                          : row.ownership === "Unmanaged"
+                            ? color.warning
+                            : color.muted
                       }
                     >
                       {row.ownership}
@@ -1933,7 +1949,14 @@ export function SkilloomApp({
                 )}
                 {!tiny && (
                   <Box width={10}>
-                    <Text color={color.muted}>{row.machines.length}</Text>
+                    <Text
+                      color={
+                        offset + i === index ? color.selectedText : color.muted
+                      }
+                      bold={offset + i === index}
+                    >
+                      {row.machines.length}
+                    </Text>
                   </Box>
                 )}
               </Box>
