@@ -79,7 +79,7 @@ describe("full-screen skill library", () => {
     expect(api.enrich).toHaveBeenCalledTimes(1);
   });
   it.each([40, 100, 140])(
-    "shows invocation and keeps read evidence in details at %i columns",
+    "shows invocation and session usage in details at %i columns",
     async (width) => {
       const api = backend();
       const app = mount(width, api);
@@ -96,10 +96,12 @@ describe("full-screen skill library", () => {
       expect(api.execute).not.toHaveBeenCalled();
       app.stdin.write("\r");
       await tick();
-      expect(app.lastFrame()).toContain("1 recorded session");
+      expect(app.lastFrame()).toContain("1 session");
       app.stdin.write("\u001b[F");
       await tick();
-      expect(app.lastFrame()).toContain("Partial scan");
+      expect(app.lastFrame()).toContain("What may be missing");
+      expect(app.lastFrame()).not.toContain("Partial scan");
+      expect(app.lastFrame()).not.toContain("Logs scanned");
       if (width >= 100) {
         expect(app.lastFrame()).toContain("Recent sessions");
         expect(app.lastFrame()).toContain("bbbbbbbb");
@@ -361,8 +363,12 @@ describe("full-screen skill library", () => {
     await tick();
     app.stdin.write("\u001b[F");
     await tick();
-    expect(app.lastFrame()).toContain("Evidence coverage");
-    if (!app.lastFrame()?.includes("remote/source-7")) {
+    expect(app.lastFrame()).toContain("What may be missing");
+    for (
+      let page = 0;
+      page < 4 && !app.lastFrame()?.includes("remote/source-7");
+      page++
+    ) {
       app.stdin.write("\u001b[5~");
       await tick();
     }
