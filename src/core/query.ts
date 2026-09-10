@@ -1,5 +1,6 @@
 import type { SkillUsageEvent } from "./skill-usage.js";
 import type { InventorySkill, MachineInventory, Scope } from "./types.js";
+import type { SkillUsageSession } from "./usage-sessions.js";
 
 export interface InventoryQuery {
   machine?: string | undefined;
@@ -21,6 +22,8 @@ export interface InventoryOccurrence extends InventorySkill {
     | undefined;
   nameEvidence?: InventoryOccurrence["usedBy"];
   usageHistory?: SkillUsageEvent[] | undefined;
+  usageSessions?: SkillUsageSession[] | undefined;
+  sessionsTruncated?: boolean | undefined;
   historyTruncated?: boolean | undefined;
   usageCoverage?: string | undefined;
   usageObservedAt?: string | undefined;
@@ -104,6 +107,8 @@ export function queryInventory(
       skills: Map<string, NonNullable<InventoryOccurrence["usedBy"]>>;
       history: Map<string, SkillUsageEvent[]> | undefined;
       historyTruncated: boolean;
+      sessions: Map<string, SkillUsageSession[]> | undefined;
+      sessionsTruncated: boolean;
     }
   >();
   for (const snapshot of [inventory, ...(inventory.remoteObservations ?? [])]) {
@@ -130,12 +135,23 @@ export function queryInventory(
       rows.push(event);
       history!.set(event.name, rows);
     }
+    const sessions =
+      snapshot.skillUsage.sessions === undefined
+        ? undefined
+        : new Map<string, SkillUsageSession[]>();
+    for (const session of snapshot.skillUsage.sessions ?? []) {
+      const rows = sessions!.get(session.name) ?? [];
+      rows.push(session);
+      sessions!.set(session.name, rows);
+    }
     usageByMachine.set(snapshot.machine.id, {
       coverage: snapshot.skillUsage.coverage.status,
       observedAt: snapshot.skillUsage.coverage.observedAt,
       skills,
       history,
       historyTruncated: snapshot.skillUsage.historyTruncated === true,
+      sessions,
+      sessionsTruncated: snapshot.skillUsage.sessionsTruncated === true,
     });
   }
   for (const record of records) {
@@ -155,6 +171,14 @@ export function queryInventory(
               : event.evidence === "invoke",
           ) ?? (usage.history ? [] : undefined);
       record.historyTruncated = usage.historyTruncated;
+      record.usageSessions =
+        usage.sessions
+          ?.get(record.name)
+          ?.filter(
+            (session) =>
+              !session.pathId || record.usagePathIds?.includes(session.pathId),
+          ) ?? (usage.sessions ? [] : undefined);
+      record.sessionsTruncated = usage.sessionsTruncated;
       record.usageObservedAt = usage.observedAt;
       record.usageCoverage = usage.coverage;
     }

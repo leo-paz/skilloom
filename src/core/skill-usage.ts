@@ -13,7 +13,11 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import { extractCodexSkillEvents } from "./codex-skill-events.js";
+import {
+  codexRecordCreatedAt,
+  extractCodexSessionIdentity,
+  extractCodexSkillEvents,
+} from "./codex-skill-events.js";
 import {
   BACKFILL_BATCH_SIZE,
   type BackfillState,
@@ -23,12 +27,17 @@ import {
 import {
   appendUsageEvents,
   atomicUsageJson,
+  mergeUsageEvent,
   readUsageJournal,
   saveUsageManifest,
   usageDirectory,
   usageEventId,
   withUsageLock,
 } from "./usage-journal.js";
+import {
+  groupUsageSessions,
+  type SkillUsageSession,
+} from "./usage-sessions.js";
 
 export type SkillHarness = "codex" | "claude" | "pi";
 export interface SkillUsage {
@@ -48,6 +57,8 @@ export interface SkillUsageEvent {
   pathId?: string | undefined;
   /** Opaque session identity, never transcript text or a local path. */
   sessionId?: string | undefined;
+  /** Root session attribution verified by the current adapter; absent on legacy Codex events. */
+  sessionIdentityVersion?: 1 | undefined;
 }
 export interface HarnessUsageCoverage {
   harness: SkillHarness;
@@ -63,6 +74,8 @@ export interface SkillUsageScan {
   usage: SkillUsage[];
   history?: SkillUsageEvent[] | undefined;
   historyTruncated?: boolean | undefined;
+  sessions?: SkillUsageSession[] | undefined;
+  sessionsTruncated?: boolean | undefined;
   harnessCoverage?: HarnessUsageCoverage[] | undefined;
   backfill?:
     | {
@@ -108,6 +121,7 @@ export const skillUsageScanSchema = z.object({
           .string()
           .regex(/^[a-f0-9]{64}$/)
           .optional(),
+        sessionIdentityVersion: z.literal(1).optional(),
         sessionId: z
           .string()
           .regex(/^[a-f0-9]{64}$/)
@@ -117,6 +131,24 @@ export const skillUsageScanSchema = z.object({
     .max(1000)
     .optional(),
   historyTruncated: z.boolean().optional(),
+  sessions: z
+    .array(
+      z.object({
+        name: z.string().max(256),
+        harness: z.enum(["codex", "claude", "pi"]),
+        sessionId: z.string().regex(/^[a-f0-9]{64}$/),
+        pathId: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional(),
+        firstUsedAt: z.string().datetime({ offset: true }),
+        lastUsedAt: z.string().datetime({ offset: true }),
+        eventCount: z.number().int().positive(),
+      }),
+    )
+    .max(10000)
+    .optional(),
+  sessionsTruncated: z.boolean().optional(),
   harnessCoverage: z
     .array(
       z.object({
@@ -148,6 +180,8 @@ export const skillUsageScanSchema = z.object({
   }),
 });
 interface Pending {
+  groupSessionId?: string | undefined;
+  sessionIdentityVersion?: 1 | undefined;
   id: string;
   names: string[];
   evidence: "invoke" | "read" | "load";
@@ -159,6 +193,9 @@ interface Cursor {
   mtimeMs: number;
   cwd: string;
   sessionId: string;
+  groupSessionId?: string | undefined;
+  sessionIdentityVersion?: 1 | undefined;
+  codexInherited?: boolean | undefined;
   inheritedBefore?: string | undefined;
   pending: Pending[];
   omittedHistory: boolean;
@@ -471,6 +508,11 @@ async function scanLocked(options: {
           offset: Number(cursor.offset),
           mtimeMs: Number(cursor.mtimeMs) || 0,
           sessionId: text(cursor.sessionId).slice(0, 256),
+          groupSessionId:
+            text(cursor.groupSessionId).slice(0, 256) || undefined,
+          sessionIdentityVersion:
+            cursor.sessionIdentityVersion === 1 ? 1 : undefined,
+          codexInherited: cursor.codexInherited === true,
           inheritedBefore: Number.isFinite(
             Date.parse(text(cursor.inheritedBefore)),
           )
@@ -503,6 +545,12 @@ async function scanLocked(options: {
                 ? [
                     {
                       id: text(pending.id),
+                      groupSessionId:
+                        text(pending.groupSessionId).slice(0, 256) || undefined,
+                      sessionIdentityVersion:
+                        pending.sessionIdentityVersion === 1
+                          ? (1 as const)
+                          : undefined,
                       names: skillNames,
                       evidence: pending.evidence as Pending["evidence"],
                       at: text(pending.at),
@@ -532,6 +580,9 @@ async function scanLocked(options: {
                   harness: event.harness as SkillHarness,
                   evidence: event.evidence as SkillUsageEvent["evidence"],
                   at: text(event.at),
+                  ...(event.sessionIdentityVersion === 1
+                    ? { sessionIdentityVersion: 1 as const }
+                    : {}),
                   ...(event.pathId ? { pathId: text(event.pathId) } : {}),
                   ...(/^[a-f0-9]{64}$/.test(text(event.sessionId))
                     ? { sessionId: text(event.sessionId) }
@@ -558,14 +609,56 @@ async function scanLocked(options: {
       names.has(event.name) &&
       (!event.pathId || knownPathNames.has(`${event.name}\0${event.pathId}`))
     ) {
-      const prior = events.get(event.id);
-      if (!prior || Date.parse(event.at) < Date.parse(prior.at))
-        events.set(event.id, event);
+      events.set(event.id, mergeUsageEvent(events.get(event.id), event));
     }
   if (journal.truncated) limits.add("journal_window");
-  const journalTimes = new Map(
-    journal.events.map((event) => [event.id, event.at]),
+  const journalEvents = new Map(
+    journal.events.map((event) => [event.id, event]),
   );
+  // Correct old Pi boundary attributions only when an existing cursor proves
+  // this exact native session was forked. Preserve events and raw usage counts.
+  // This is linear in retained cursors/events and does not replay any transcript.
+  const piForkBoundaries = new Map<string, number>();
+  for (const cursor of Object.values(cache.files)) {
+    if (cursor.harness !== "pi" || !cursor.sessionId || !cursor.inheritedBefore)
+      continue;
+    const boundary = Date.parse(cursor.inheritedBefore);
+    if (!Number.isFinite(boundary)) continue;
+    const session = digest(`pi:${cursor.sessionId}`);
+    piForkBoundaries.set(
+      session,
+      Math.max(piForkBoundaries.get(session) ?? -Infinity, boundary),
+    );
+  }
+  for (const event of events.values()) {
+    if (event.harness !== "pi" || !event.sessionId) continue;
+    const boundary = piForkBoundaries.get(event.sessionId);
+    if (boundary !== undefined && Date.parse(event.at) <= boundary) {
+      events.set(
+        event.id,
+        mergeUsageEvent(event, {
+          ...event,
+          sessionId: undefined,
+          sessionIdentityVersion: 1,
+        }),
+      );
+    }
+  }
+  // One lookup per verified header upgrades retained legacy root-session events
+  // without replaying transcript bodies or resetting historical file offsets.
+  const legacyCodexEventsByThread = new Map<string, string[]>();
+  for (const event of events.values()) {
+    if (
+      event.harness !== "codex" ||
+      event.sessionIdentityVersion === 1 ||
+      !event.sessionId
+    )
+      continue;
+    const ids = legacyCodexEventsByThread.get(event.sessionId) ?? [];
+    ids.push(event.id);
+    legacyCodexEventsByThread.set(event.sessionId, ids);
+  }
+
   const home = options.env.HOME || options.env.USERPROFILE;
   const roots: Array<{ path: string; harness: SkillHarness }> = home
     ? [
@@ -724,17 +817,23 @@ async function scanLocked(options: {
         pathId,
         pending.evidence,
       );
-      events.set(key, {
+      const groupSessionId =
+        harness === "codex" ? pending.groupSessionId : cursor.sessionId;
+      const event: SkillUsageEvent = {
         id: key,
         name,
         harness,
         evidence: pending.evidence,
         at: pending.at,
-        ...(cursor.sessionId
-          ? { sessionId: digest(`${harness}:${cursor.sessionId}`) }
+        ...(groupSessionId
+          ? { sessionId: digest(`${harness}:${groupSessionId}`) }
+          : {}),
+        ...(pending.sessionIdentityVersion === 1
+          ? { sessionIdentityVersion: 1 as const }
           : {}),
         ...(pathId ? { pathId } : {}),
-      });
+      };
+      events.set(key, mergeUsageEvent(events.get(key), event));
     }
   };
   const processRecord = (
@@ -744,14 +843,76 @@ async function scanLocked(options: {
   ) => {
     const payload = object(record.payload),
       message = object(record.message);
-    const sessionId =
-      text(record.sessionId) ||
-      (record.type === "session_meta"
-        ? text(payload.id || payload.session_id)
-        : record.type === "session"
-          ? text(record.id)
-          : "");
-    if (sessionId && sessionId.length <= 256) cursor.sessionId = sessionId;
+    if (harness === "codex") {
+      const identity = extractCodexSessionIdentity(record);
+      if (identity) {
+        cursor.sessionId = identity.threadId;
+        cursor.groupSessionId = identity.sessionId;
+        cursor.sessionIdentityVersion = 1;
+        cursor.codexInherited = identity.inherited;
+        cursor.inheritedBefore = identity.inherited
+          ? identity.startedAt
+          : undefined;
+        if (!identity.inherited && identity.sessionId) {
+          const legacyIdentity = digest(`codex:${identity.threadId}`);
+          for (const id of legacyCodexEventsByThread.get(legacyIdentity) ??
+            []) {
+            const previous = events.get(id)!;
+            events.set(
+              id,
+              mergeUsageEvent(previous, {
+                ...previous,
+                sessionId: digest(`codex:${identity.sessionId}`),
+                sessionIdentityVersion: 1,
+              }),
+            );
+          }
+          legacyCodexEventsByThread.delete(legacyIdentity);
+        }
+      }
+    } else {
+      const sessionId =
+        text(record.sessionId) ||
+        (record.type === "session" ? text(record.id) : "");
+      if (
+        sessionId &&
+        sessionId.length <= 256 &&
+        !/[\x00-\x20\x7f]/.test(sessionId)
+      )
+        cursor.sessionId = sessionId;
+    }
+    // A child or fork can contain copied response items. Only original item
+    // creation metadata after its creation boundary proves execution there.
+    const originalAt =
+      harness === "codex" ? codexRecordCreatedAt(record) : undefined;
+    if (
+      harness === "codex" &&
+      record.type === "response_item" &&
+      cursor.codexInherited &&
+      originalAt &&
+      cursor.inheritedBefore &&
+      Date.parse(originalAt) <= Date.parse(cursor.inheritedBefore)
+    ) {
+      cursor.omittedHistory = true;
+      return;
+    }
+    const codexSessionKnown =
+      cursor.sessionIdentityVersion === 1 &&
+      (!cursor.codexInherited ||
+        Boolean(
+          originalAt &&
+            cursor.inheritedBefore &&
+            Date.parse(originalAt) > Date.parse(cursor.inheritedBefore),
+        ));
+    const sessionAttribution =
+      harness === "codex"
+        ? {
+            sessionIdentityVersion: 1 as const,
+            ...(codexSessionKnown && cursor.groupSessionId
+              ? { groupSessionId: cursor.groupSessionId }
+              : {}),
+          }
+        : {};
     if (
       harness === "pi" &&
       record.type === "session" &&
@@ -761,11 +922,13 @@ async function scanLocked(options: {
       cursor.inheritedBefore = text(record.timestamp);
     // Pi forks copy earlier entries verbatim into a new session, sometimes with a
     // different cwd. Do not treat those copies as fresh executions at the new cwd.
+    // Equal millisecond timestamps are ambiguous too; omit that boundary rather
+    // than claim a copied execution belonged to the new session.
     if (
       harness === "pi" &&
       record.type === "message" &&
       cursor.inheritedBefore &&
-      Date.parse(text(record.timestamp)) < Date.parse(cursor.inheritedBefore)
+      Date.parse(text(record.timestamp)) <= Date.parse(cursor.inheritedBefore)
     ) {
       cursor.omittedHistory = true;
       return;
@@ -796,6 +959,7 @@ async function scanLocked(options: {
           names: matched,
           evidence: "load",
           at: event.at,
+          ...sessionAttribution,
         });
         complete(cursor, harness, event.id, true);
       }
@@ -844,7 +1008,13 @@ async function scanLocked(options: {
         Number.isFinite(Date.parse(at))
       ) {
         cursor.pending = cursor.pending.filter((item) => item.id !== id);
-        cursor.pending.push({ id: text(id), names: matched, evidence, at });
+        cursor.pending.push({
+          id: text(id),
+          names: matched,
+          evidence,
+          at,
+          ...sessionAttribution,
+        });
         if (cursor.pending.length > 128) {
           cursor.pending.shift();
           limits.add("pending_calls");
@@ -938,7 +1108,13 @@ async function scanLocked(options: {
         pending: [],
         omittedHistory: false,
       };
-    if (cursor.offset === file.size && cursor.mtimeMs === file.modified) {
+    const needsSessionHeader =
+      file.harness === "codex" && cursor.sessionIdentityVersion !== 1;
+    if (
+      cursor.offset === file.size &&
+      cursor.mtimeMs === file.modified &&
+      !needsSessionHeader
+    ) {
       cache.files[key] = cursor;
       continue;
     }
@@ -967,7 +1143,7 @@ async function scanLocked(options: {
         }
         if (
           offset > 0 &&
-          !cursor.sessionId &&
+          (!cursor.sessionId || needsSessionHeader) &&
           coverage.bytesRead < LIMITS.bytes
         ) {
           // Session headers restore identity/cwd when the bounded window starts mid-file.
@@ -1195,8 +1371,12 @@ async function scanLocked(options: {
         directory,
         retained.filter(
           (event) =>
-            !journalTimes.has(event.id) ||
-            Date.parse(event.at) < Date.parse(journalTimes.get(event.id)!),
+            !journalEvents.has(event.id) ||
+            Date.parse(event.at) <
+              Date.parse(journalEvents.get(event.id)!.at) ||
+            event.sessionIdentityVersion !==
+              journalEvents.get(event.id)!.sessionIdentityVersion ||
+            event.sessionId !== journalEvents.get(event.id)!.sessionId,
         ),
       );
       await saveUsageManifest(directory, options.knownSkills);
@@ -1254,6 +1434,8 @@ async function scanLocked(options: {
         }
       : {}),
     history: cache.events.slice(-1000).reverse(),
+    sessions: groupUsageSessions(cache.events),
+    sessionsTruncated: cache.omittedEvents || journal.truncated,
     historyTruncated: cache.omittedEvents || cache.events.length > 1000,
     coverage,
   };

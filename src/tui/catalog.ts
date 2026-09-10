@@ -201,3 +201,60 @@ export function usageLabel(entry: LibraryEntry, compact = false): string {
       ? "Partial"
       : "No match";
 }
+
+/** A native session is scoped to its machine and harness. Multiple occurrences
+ * and installation paths can contribute evidence but never multiply sessions. */
+export function librarySessions(entry: LibraryEntry): Array<{
+  machineId: string;
+  machine: string;
+  harness: string;
+  sessionId: string;
+  firstUsedAt: string;
+  lastUsedAt: string;
+  pathMatched: boolean;
+}> {
+  const grouped = new Map<
+    string,
+    {
+      machineId: string;
+      machine: string;
+      harness: string;
+      sessionId: string;
+      firstUsedAt: string;
+      lastUsedAt: string;
+      pathMatched: boolean;
+    }
+  >();
+  for (const record of entry.occurrences)
+    for (const session of record.usageSessions ?? []) {
+      const key = JSON.stringify([
+        record.machine.id,
+        session.harness,
+        session.sessionId,
+      ]);
+      const current = grouped.get(key);
+      if (current) {
+        if (Date.parse(session.firstUsedAt) < Date.parse(current.firstUsedAt))
+          current.firstUsedAt = session.firstUsedAt;
+        if (Date.parse(session.lastUsedAt) > Date.parse(current.lastUsedAt))
+          current.lastUsedAt = session.lastUsedAt;
+        current.pathMatched ||= !!session.pathId;
+      } else
+        grouped.set(key, {
+          machineId: record.machine.id,
+          machine: record.machine.name,
+          harness: session.harness,
+          sessionId: session.sessionId,
+          firstUsedAt: session.firstUsedAt,
+          lastUsedAt: session.lastUsedAt,
+          pathMatched: !!session.pathId,
+        });
+    }
+  return [...grouped.values()].sort(
+    (a, b) =>
+      Date.parse(b.lastUsedAt) - Date.parse(a.lastUsedAt) ||
+      a.machineId.localeCompare(b.machineId) ||
+      a.harness.localeCompare(b.harness) ||
+      a.sessionId.localeCompare(b.sessionId),
+  );
+}

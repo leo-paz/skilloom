@@ -162,8 +162,36 @@ export function publicUsageEvent(event: SkillUsageEvent): SkillUsageEvent {
     at: event.at,
     ...(event.pathId ? { pathId: event.pathId } : {}),
     ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+    ...(event.sessionIdentityVersion === 1
+      ? { sessionIdentityVersion: 1 as const }
+      : {}),
   };
 }
+/** Merge repeated observations independently of discovery order. Versioned
+ * unknown attribution is conservative: a copied load must never move sessions.
+ * A verified observation may upgrade an unversioned legacy attribution.
+ */
+export function mergeUsageEvent(
+  prior: SkillUsageEvent | undefined,
+  next: SkillUsageEvent,
+): SkillUsageEvent {
+  if (!prior) return publicUsageEvent(next);
+  const base = Date.parse(next.at) < Date.parse(prior.at) ? next : prior;
+  const verified = [prior, next].filter(
+    (event) => event.sessionIdentityVersion === 1,
+  );
+  const candidates = verified.length ? verified : [prior, next];
+  const identities = new Set(candidates.map((event) => event.sessionId));
+  const sessionId =
+    identities.size === 1 ? candidates[0]?.sessionId : undefined;
+  const result = publicUsageEvent(base);
+  delete result.sessionId;
+  if (sessionId) result.sessionId = sessionId;
+  // Mark conflicts so another later duplicate cannot restore arbitrary attribution.
+  if (verified.length || identities.size > 1) result.sessionIdentityVersion = 1;
+  return result;
+}
+
 export async function readUsageJournal(
   directory: string,
 ): Promise<{ events: SkillUsageEvent[]; truncated: boolean }> {
@@ -212,14 +240,14 @@ export async function readUsageJournal(
             !["read", "invoke", "load"].includes(event.evidence) ||
             !Number.isFinite(Date.parse(event.at)) ||
             (event.pathId && !/^[a-f0-9]{64}$/.test(event.pathId)) ||
-            (event.sessionId && !/^[a-f0-9]{64}$/.test(event.sessionId))
+            (event.sessionId && !/^[a-f0-9]{64}$/.test(event.sessionId)) ||
+            (event.sessionIdentityVersion !== undefined &&
+              event.sessionIdentityVersion !== 1)
           ) {
             truncated = true;
             continue;
           }
-          const prior = events.get(event.id);
-          if (!prior || Date.parse(event.at) < Date.parse(prior.at))
-            events.set(event.id, publicUsageEvent(event));
+          events.set(event.id, mergeUsageEvent(events.get(event.id), event));
         } catch {
           truncated = true;
         }
@@ -307,6 +335,7 @@ export async function recordHookUsage(
       evidence: input.evidence,
       at: input.at,
       sessionId: hash(`${input.harness}:${input.sessionId}`),
+      sessionIdentityVersion: 1,
       ...(match.pathId ? { pathId: match.pathId } : {}),
     },
   ]);

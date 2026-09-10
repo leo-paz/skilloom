@@ -209,6 +209,14 @@ export async function usageCommand(
           backfill: next.skillUsage?.backfill,
           coverage: next.skillUsage?.harnessCoverage,
           events: next.skillUsage?.history?.length,
+          recordedSessions:
+            next.skillUsage?.sessions === undefined
+              ? undefined
+              : new Set(
+                  next.skillUsage.sessions.map(
+                    (session) => `${session.harness}:${session.sessionId}`,
+                  ),
+                ).size,
         }),
       );
       if (

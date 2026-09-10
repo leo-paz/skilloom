@@ -8,12 +8,74 @@ export interface CodexSkillEvent {
   name: string;
   evidence: "load";
   at?: string;
+  /** Original message creation time, unlike a rewritten rollout envelope. */
+  originalAt?: string;
 }
 
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+
+/** Root session identity is separate from the thread/rollout identity.
+ * Codex protocol/src/protocol.rs SessionMeta documents session_id as the root
+ * thread ID; legacy child rollouts without it cannot establish their root.
+ */
+export function extractCodexSessionIdentity(record: unknown):
+  | {
+      threadId: string;
+      sessionId?: string;
+      inherited: boolean;
+      startedAt?: string;
+    }
+  | undefined {
+  const outer = object(record);
+  if (outer.type !== "session_meta") return undefined;
+  const meta = object(outer.payload);
+  const validId = (value: unknown): value is string =>
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    !/[\x00-\x20\x7f]/.test(value);
+  if (!validId(meta.id)) return undefined;
+  const source = object(meta.source);
+  const child = Boolean(
+    meta.parent_thread_id ||
+      source.subagent ||
+      meta.thread_source === "subagent",
+  );
+  const inherited = child || Boolean(meta.forked_from_id);
+  const sessionId = validId(meta.session_id)
+    ? meta.session_id
+    : !child
+      ? meta.id
+      : undefined;
+  const startedAt =
+    typeof meta.timestamp === "string" &&
+    Number.isFinite(Date.parse(meta.timestamp))
+      ? meta.timestamp
+      : undefined;
+  return {
+    threadId: meta.id,
+    ...(sessionId ? { sessionId } : {}),
+    inherited,
+    ...(startedAt ? { startedAt } : {}),
+  };
+}
+
+/** Timestamp from the original response item, never the containing rollout. */
+export function codexRecordCreatedAt(record: unknown): string | undefined {
+  const outer = object(record);
+  const created = object(
+    object(outer.payload).internal_chat_message_metadata_passthrough,
+  ).create_time;
+  return typeof created === "number" &&
+    created >= 0 &&
+    created <= 253402300799 &&
+    Number.isFinite(created)
+    ? new Date(created * 1000).toISOString()
+    : undefined;
+}
 
 /**
  * Recognizes selected instructions persisted by Codex, not skill-looking user text.
@@ -47,14 +109,8 @@ export function extractCodexSkillEvents(record: unknown): CodexSkillEvent[] {
 
   // The message creation time survives history copies; the envelope timestamp
   // can describe when a copied rollout record was written.
-  const created = metadata.create_time;
-  const timestamp =
-    typeof created === "number" &&
-    created >= 0 &&
-    created <= 253402300799 &&
-    Number.isFinite(created)
-      ? new Date(created * 1000).toISOString()
-      : outer.timestamp;
+  const originalAt = codexRecordCreatedAt(record);
+  const timestamp = originalAt ?? outer.timestamp;
   const at =
     typeof timestamp === "string" &&
     /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(
@@ -95,6 +151,7 @@ export function extractCodexSkillEvents(record: unknown): CodexSkillEvent[] {
       path,
       evidence: "load",
       ...(at ? { at } : {}),
+      ...(originalAt ? { originalAt } : {}),
     });
   }
   return events;

@@ -96,13 +96,13 @@ describe("full-screen skill library", () => {
       expect(api.execute).not.toHaveBeenCalled();
       app.stdin.write("\r");
       await tick();
-      expect(app.lastFrame()).toContain("2 skill reads");
+      expect(app.lastFrame()).toContain("1 recorded session");
       app.stdin.write("\u001b[F");
       await tick();
       expect(app.lastFrame()).toContain("Partial scan");
       if (width >= 100) {
-        expect(app.lastFrame()).toContain("Recent activity");
-        expect(app.lastFrame()).toContain("Read SKILL.md");
+        expect(app.lastFrame()).toContain("Recent sessions");
+        expect(app.lastFrame()).toContain("bbbbbbbb");
       }
     },
   );

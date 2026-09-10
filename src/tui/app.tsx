@@ -8,6 +8,7 @@ import {
   harnessLabel,
   invocationLabel,
   type LibraryEntry,
+  librarySessions,
   observedLabel,
   ownershipLabel,
   safeText,
@@ -292,6 +293,7 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       record.usedBy,
       record.nameEvidence,
       record.usageCoverage,
+      record.usageSessions,
     ]);
     const group = groups.get(key);
     if (group) {
@@ -472,43 +474,81 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
         ),
       );
     behavior.push({ text: " " });
-    if (record.usedBy?.length) {
-      for (const usage of record.usedBy) {
-        behavior.push(
-          ...field(
-            harnessLabel(usage.harness),
-            `${usage.count} ${usage.evidence === "invoke" ? "invocations" : usage.evidence === "load" ? "skill loads" : "skill reads"}`,
-            columnWidth,
-            color.good,
-          ),
-        );
-        behavior.push(
-          ...field(
-            usage.evidence === "load" ? "Last loaded" : "Last read",
-            observedLabel(usage.lastUsedAt),
-            columnWidth,
-            color.muted,
-          ),
-        );
-      }
-    } else
+    const sessions =
+      record.usageSessions?.filter((session) => session.pathId) ?? [];
+    const harnesses = [
+      ...new Set([
+        ...(record.usedBy ?? []).map((usage) => usage.harness),
+        ...sessions.map((session) => session.harness),
+      ]),
+    ];
+    for (const harness of harnesses) {
+      const matches = sessions.filter((session) => session.harness === harness);
+      const count = new Set(matches.map((session) => session.sessionId)).size;
       behavior.push(
         ...field(
-          "Read evidence",
-          record.usageCoverage ? "None recorded" : "Not collected",
+          harnessLabel(harness),
+          count
+            ? `${count} recorded ${count === 1 ? "session" : "sessions"}`
+            : record.usageSessions === undefined
+              ? "Sessions not collected"
+              : "Session identity unknown",
+          columnWidth,
+          count ? color.good : color.muted,
+        ),
+      );
+      const last = matches.reduce<string | undefined>(
+        (latest, session) =>
+          !latest || Date.parse(session.lastUsedAt) > Date.parse(latest)
+            ? session.lastUsedAt
+            : latest,
+        undefined,
+      );
+      if (last)
+        behavior.push(
+          ...field("Last used", observedLabel(last), columnWidth, color.muted),
+        );
+      const total = (record.usedBy ?? [])
+        .filter((usage) => usage.harness === harness)
+        .reduce((sum, usage) => sum + usage.count, 0);
+      const attributed = matches.reduce(
+        (sum, session) => sum + session.eventCount,
+        0,
+      );
+      if (count && total > attributed)
+        behavior.push({
+          text: `${total - attributed} other events lack session identity.`,
+          tone: color.muted,
+        });
+    }
+    if (!harnesses.length)
+      behavior.push(
+        ...field(
+          "Sessions",
+          record.usageSessions === undefined
+            ? "Not collected"
+            : "None recorded",
           columnWidth,
           color.muted,
         ),
       );
-    for (const usage of record.nameEvidence ?? [])
+    for (const harness of [
+      ...new Set((record.nameEvidence ?? []).map((usage) => usage.harness)),
+    ]) {
+      const count = new Set(
+        (record.usageSessions ?? [])
+          .filter((session) => !session.pathId && session.harness === harness)
+          .map((session) => session.sessionId),
+      ).size;
       behavior.push(
         ...field(
-          "Name-only use",
-          `${harnessLabel(usage.harness)}: ${usage.count} invocations. Installation unknown.`,
+          "Invoked by name",
+          `${harnessLabel(harness)}: ${count ? `${count} recorded ${count === 1 ? "session" : "sessions"}` : "session identity unknown"}. Installation unknown.`,
           columnWidth,
           color.muted,
         ),
       );
+    }
     if (record.conflict)
       installation.push(
         { text: " " },
@@ -520,86 +560,78 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
         : [...installation, { text: " " }, ...behavior]),
     );
   }
-  const history = [
-    ...new Map(
-      entry.occurrences.flatMap((record) =>
-        (record.usageHistory ?? []).map(
-          (event) =>
-            [
-              `${record.machine.id}:${event.id}`,
-              { ...event, machine: record.machine.name },
-            ] as const,
-        ),
-      ),
-    ).values(),
-  ].sort(
-    (a, b) => Date.parse(b.at) - Date.parse(a.at) || a.id.localeCompare(b.id),
-  );
+  const history = librarySessions(entry);
   content.push(
     { text: " " },
-    { text: "Recent activity", bold: true },
+    { text: "Recent sessions", bold: true },
     { text: " " },
   );
   if (history.length) {
     if (usableWidth >= 76)
       content.push(
         ...detailTableRow(
-          ["When (UTC)", "Agent", "Event", "Machine"],
-          [23, 12, 20, usableWidth - 55],
+          ["Last used (UTC)", "Agent", "Session", "Machine"],
+          [23, 12, 16, usableWidth - 51],
           true,
         ),
         { text: " " },
       );
-    for (const event of history.slice(0, 20)) {
-      const at = Number.isFinite(Date.parse(event.at))
-        ? new Date(event.at).toISOString().slice(0, 19).replace("T", " ")
-        : "Unknown";
+    for (const session of history.slice(0, 20)) {
+      const at = new Date(session.lastUsedAt)
+        .toISOString()
+        .slice(0, 19)
+        .replace("T", " ");
       const label =
-        event.evidence === "read"
-          ? "Read SKILL.md"
-          : event.evidence === "load"
-            ? "Loaded skill"
-            : event.pathId
-              ? "Invoked"
-              : "Invoked by name";
+        session.sessionId.slice(0, 8) + (session.pathMatched ? "" : " (name)");
       if (usableWidth >= 76)
         content.push(
           ...detailTableRow(
-            [at, harnessLabel(event.harness), label, event.machine],
-            [23, 12, 20, usableWidth - 55],
+            [at, harnessLabel(session.harness), label, session.machine],
+            [23, 12, 16, usableWidth - 51],
           ),
         );
       else
         content.push(
           { text: `${at} UTC`, tone: color.muted },
-          ...field("Machine", event.machine, usableWidth),
-          ...field(harnessLabel(event.harness), label, usableWidth),
+          ...field("Machine", session.machine, usableWidth),
+          ...field(
+            harnessLabel(session.harness),
+            `Session ${label}`,
+            usableWidth,
+          ),
           { text: " " },
         );
     }
-    if (history.some((event) => !event.pathId))
-      content.push(
-        { text: " " },
-        {
-          text: "Name-only invocations do not identify an installation.",
-          tone: color.muted,
-        },
-      );
-    if (
-      history.length > 20 ||
-      entry.occurrences.some((record) => record.historyTruncated)
-    )
+    content.push({
+      text: "One row per session. Repeated reads count once.",
+      tone: color.muted,
+    });
+    if (history.some((session) => !session.pathMatched))
       content.push({
-        text: "Showing the latest retained events. Older events are omitted.",
+        text: "(name) identifies an invocation without a resolved installation.",
+        tone: color.muted,
+      });
+    if (history.length > 20)
+      content.push({
+        text: "Showing the 20 most recent recorded sessions.",
         tone: color.muted,
       });
   } else
     content.push({
       text: entry.occurrences.some(
-        (record) => record.usageHistory !== undefined,
+        (record) => record.usageSessions !== undefined,
       )
-        ? "No matching events in the retained history."
-        : "History not collected. Refresh on the originating machine.",
+        ? "No sessions with verified identity in retained evidence."
+        : "Session history not collected. Refresh on the originating machine.",
+      tone: color.muted,
+    });
+  content.push({
+    text: "Recorded sessions are observed evidence, not lifetime totals.",
+    tone: color.muted,
+  });
+  if (entry.occurrences.some((record) => record.sessionsTruncated))
+    content.push({
+      text: "Older evidence is omitted; session counts are a lower bound.",
       tone: color.muted,
     });
   content.push(
@@ -664,11 +696,7 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
               ? "Partial scan"
               : "Not scanned";
       content.push(
-        ...field(
-          harnessLabel(harness.harness),
-          `${status} · ${harness.filesScanned} files`,
-          usableWidth,
-        ),
+        ...field(harnessLabel(harness.harness), status, usableWidth),
       );
     }
     if (machine.backfill && !machine.backfill.complete)

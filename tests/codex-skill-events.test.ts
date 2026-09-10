@@ -145,3 +145,52 @@ it("does not mistake nested attempted calls or an outer exec success for a skill
     }),
   ).toEqual([]);
 });
+
+it("distinguishes root session identity from a subagent thread and rejects filename-style guesses", async () => {
+  const { extractCodexSessionIdentity } = await import(
+    "../src/core/codex-skill-events.js"
+  );
+  expect(
+    extractCodexSessionIdentity({
+      type: "session_meta",
+      payload: {
+        id: "child-thread",
+        session_id: "root-session",
+        parent_thread_id: "parent-thread",
+        timestamp: at,
+      },
+    }),
+  ).toEqual({
+    threadId: "child-thread",
+    sessionId: "root-session",
+    inherited: true,
+    startedAt: at,
+  });
+  expect(
+    extractCodexSessionIdentity({
+      type: "session_meta",
+      payload: {
+        id: "old-child",
+        source: { subagent: { thread_spawn: { parent_thread_id: "root" } } },
+      },
+    }),
+  ).toEqual({ threadId: "old-child", inherited: true });
+  expect(
+    extractCodexSessionIdentity({
+      type: "session_meta",
+      payload: { id: "old-root" },
+    }),
+  ).toEqual({ threadId: "old-root", sessionId: "old-root", inherited: false });
+  expect(
+    extractCodexSessionIdentity({
+      type: "session_meta",
+      payload: { id: "bad\nidentity" },
+    }),
+  ).toBeUndefined();
+  expect(
+    extractCodexSessionIdentity({
+      type: "session_meta",
+      payload: { session_id: "root" },
+    }),
+  ).toBeUndefined();
+});
