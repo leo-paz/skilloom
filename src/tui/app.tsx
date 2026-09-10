@@ -673,7 +673,9 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
     }
     if (machine.backfill && !machine.backfill.complete)
       content.push({
-        text: "History backfill in progress. Browsing stays available.",
+        text: machine.backfill.paused
+          ? "History paused at the time limit. Refresh that machine to continue."
+          : "History backfill in progress. Browsing stays available.",
         tone: color.muted,
       });
   }
@@ -921,10 +923,18 @@ export function SkilloomApp({
       () => {
         void backend.collectHistory!(inventory)
           .then((next) => {
-            if (active)
+            if (active) {
+              if (
+                next.skillUsage?.backfill?.paused &&
+                !inventory.skillUsage?.backfill?.paused
+              )
+                setNotice(
+                  "History paused after 2 minutes. Progress saved; r continues.",
+                );
               setInventory((current) =>
                 current === inventory ? next : current,
               );
+            }
           })
           .catch((error) => {
             if (active)
@@ -933,7 +943,10 @@ export function SkilloomApp({
               );
           });
       },
-      inventory.skillUsage?.backfill?.complete ? 30000 : 2000,
+      inventory.skillUsage?.backfill?.complete ||
+        inventory.skillUsage?.backfill?.paused
+        ? 30000
+        : 2000,
     );
     return () => {
       active = false;

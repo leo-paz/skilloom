@@ -13,6 +13,7 @@ import {
 } from "../core/config.js";
 import { enrichInventoryMetadata } from "../core/enrich-metadata.js";
 import type { MachineInventory } from "../core/types.js";
+import { UsageBackfillBudget } from "../core/usage-budget.js";
 import {
   type CommandResult,
   type DashboardBackend,
@@ -33,6 +34,7 @@ export function createDashboardBackend(
     controller?: AbortController;
   }>();
   let stopping = false;
+  const historyBudget = new UsageBackfillBudget();
   const track = <T>(
     readOnly: boolean,
     task: (signal?: AbortSignal) => Promise<T>,
@@ -63,13 +65,17 @@ export function createDashboardBackend(
     },
     async collectHistory(inventory: MachineInventory) {
       return track(true, async (signal) => {
+        const backfill =
+          !inventory.skillUsage?.backfill?.complete && !historyBudget.expired;
+        if (backfill) historyBudget.start();
         const next = await collectInventoryUsage(
           inventory,
           runtime.env,
           join(dirname(paths.inventoryPath), "skill-usage-cache.json"),
-          inventory.skillUsage?.backfill?.complete ? "tail" : "backfill",
+          backfill ? "backfill" : "tail",
           signal,
         );
+        historyBudget.mark(next.skillUsage);
         signal?.throwIfAborted();
         await saveUsageIfCurrent(paths.inventoryPath, inventory, next);
         return next;
@@ -104,6 +110,7 @@ export function createDashboardBackend(
       });
     },
     async load(refresh, onProgress) {
+      if (refresh) historyBudget.reset();
       return track(true, async (signal) => {
         signal?.throwIfAborted();
         if (!refresh) {

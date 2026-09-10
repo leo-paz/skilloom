@@ -15,6 +15,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { extractCodexSkillEvents } from "./codex-skill-events.js";
 import {
+  BACKFILL_BATCH_SIZE,
   type BackfillState,
   discoverBackfill,
   newBackfillState,
@@ -64,7 +65,12 @@ export interface SkillUsageScan {
   historyTruncated?: boolean | undefined;
   harnessCoverage?: HarnessUsageCoverage[] | undefined;
   backfill?:
-    | { complete: boolean; filesDiscovered: number; filesPending: number }
+    | {
+        complete: boolean;
+        filesDiscovered: number;
+        filesPending: number;
+        paused?: "time_limit" | undefined;
+      }
     | undefined;
   coverage: {
     status: "complete" | "incomplete";
@@ -129,6 +135,7 @@ export const skillUsageScanSchema = z.object({
       complete: z.boolean(),
       filesDiscovered: z.number().int().nonnegative(),
       filesPending: z.number().int().nonnegative(),
+      paused: z.literal("time_limit").optional(),
     })
     .optional(),
   coverage: z.object({
@@ -171,6 +178,18 @@ interface Cache {
   knownFingerprint?: string;
   lastCoverage?: SkillUsageScan["coverage"];
 }
+// A long-running collector can reuse its validated checkpoint. Disk metadata and
+// installation identity must still match; another process writing a checkpoint
+// invalidates this entry. Remove before mutation so aborted/failed passes cannot
+// expose uncommitted progress to a later scan.
+const validatedCaches = new Map<string, { identity: string; cache: Cache }>();
+const checkpointIdentity = (info: {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}) => `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
 interface Candidate {
   path: string;
   harness: SkillHarness;
@@ -309,6 +328,11 @@ async function scanLocked(options: {
       }
     }
   }
+  if (limits.has("time") || limits.has("aborted"))
+    throw new Error(
+      "Skill installation verification interrupted; saved history is unchanged.",
+    );
+  const knownPathNames = new Set(pathNames.values());
   const matchName = (name: string): string[] => (names.has(name) ? [name] : []);
   const matchPath = (value: unknown, cwd: string): string[] => {
     const path = text(value);
@@ -364,148 +388,161 @@ async function scanLocked(options: {
       cachePath,
       constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
     );
-    let stored: Record<string, unknown>;
+    let stored: Record<string, unknown> = {};
+    let reused = false;
     try {
       const info = await handle.stat();
       if (!info.isFile() || info.size > 64 * 1024 * 1024)
         throw new Error("invalid cache file");
-      const buffer = Buffer.alloc(
-        Math.min(info.size + 1, 64 * 1024 * 1024 + 1),
-      );
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      if (bytesRead > 64 * 1024 * 1024) throw new Error("oversized cache");
-      stored = decode(buffer.subarray(0, bytesRead).toString("utf8"));
+      const validated = validatedCaches.get(cachePath);
+      validatedCaches.delete(cachePath);
+      if (
+        validated?.identity === checkpointIdentity(info) &&
+        validated.cache.knownFingerprint === knownFingerprint
+      ) {
+        cache = validated.cache;
+        reused = true;
+      } else {
+        const buffer = Buffer.alloc(
+          Math.min(info.size + 1, 64 * 1024 * 1024 + 1),
+        );
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        if (bytesRead > 64 * 1024 * 1024) throw new Error("oversized cache");
+        stored = decode(buffer.subarray(0, bytesRead).toString("utf8"));
+      }
     } finally {
       await handle.close();
     }
-    if (stored.version !== 4) throw new Error("cache version");
-    if (backfill && stored.backfill) {
-      const parsed = z
-        .object({
-          queue: z
-            .array(
-              z.object({
-                path: z.string().refine(isAbsolute),
-                harness: z.enum(["codex", "claude", "pi"]),
-                skip: z.number().int().nonnegative(),
-                identity: z.string().optional(),
-                modified: z.number().optional(),
-              }),
-            )
-            .max(100000),
-          pending: z
-            .array(
-              z.object({
-                path: z.string().refine(isAbsolute),
-                harness: z.enum(["codex", "claude", "pi"]),
-                modified: z.number(),
-                size: z.number().int().nonnegative(),
-                identity: z.string(),
-              }),
-            )
-            .max(48),
-          completed: z.boolean(),
-          filesDiscovered: z.number().int().nonnegative(),
-          skipped: z.array(z.string()).max(100),
-        })
-        .safeParse(stored.backfill);
-      if (parsed.success) cache.backfill = parsed.data;
-      else limits.add("cache_unavailable");
-    }
-    cache.omittedEvents = stored.omittedEvents === true;
-    cache.knownFingerprint = text(stored.knownFingerprint);
-    const previousCoverage = skillUsageScanSchema.shape.coverage.safeParse(
-      stored.lastCoverage,
-    );
-    if (previousCoverage.success) cache.lastCoverage = previousCoverage.data;
-    for (const [key, value] of Object.entries(object(stored.files)).slice(
-      0,
-      backfill ? 100000 : LIMITS.candidates,
-    )) {
-      const cursor = object(value);
-      if (
-        !/^[a-f0-9]{64}$/.test(key) ||
-        typeof cursor.identity !== "string" ||
-        !Number.isSafeInteger(cursor.offset) ||
-        Number(cursor.offset) < 0
-      )
-        continue;
-      cache.files[key] = {
-        identity: cursor.identity,
-        offset: Number(cursor.offset),
-        mtimeMs: Number(cursor.mtimeMs) || 0,
-        sessionId: text(cursor.sessionId).slice(0, 256),
-        inheritedBefore: Number.isFinite(
-          Date.parse(text(cursor.inheritedBefore)),
+    if (!reused) {
+      if (stored.version !== 4) throw new Error("cache version");
+      if (backfill && stored.backfill) {
+        const parsed = z
+          .object({
+            queue: z
+              .array(
+                z.object({
+                  path: z.string().refine(isAbsolute),
+                  harness: z.enum(["codex", "claude", "pi"]),
+                  skip: z.number().int().nonnegative(),
+                  identity: z.string().optional(),
+                  modified: z.number().optional(),
+                }),
+              )
+              .max(100000),
+            pending: z
+              .array(
+                z.object({
+                  path: z.string().refine(isAbsolute),
+                  harness: z.enum(["codex", "claude", "pi"]),
+                  modified: z.number(),
+                  size: z.number().int().nonnegative(),
+                  identity: z.string(),
+                }),
+              )
+              .max(BACKFILL_BATCH_SIZE),
+            completed: z.boolean(),
+            filesDiscovered: z.number().int().nonnegative(),
+            skipped: z.array(z.string()).max(100),
+          })
+          .safeParse(stored.backfill);
+        if (parsed.success) cache.backfill = parsed.data;
+        else limits.add("cache_unavailable");
+      }
+      cache.omittedEvents = stored.omittedEvents === true;
+      cache.knownFingerprint = text(stored.knownFingerprint);
+      const previousCoverage = skillUsageScanSchema.shape.coverage.safeParse(
+        stored.lastCoverage,
+      );
+      if (previousCoverage.success) cache.lastCoverage = previousCoverage.data;
+      for (const [key, value] of Object.entries(object(stored.files)).slice(
+        0,
+        backfill ? 100000 : LIMITS.candidates,
+      )) {
+        const cursor = object(value);
+        if (
+          !/^[a-f0-9]{64}$/.test(key) ||
+          typeof cursor.identity !== "string" ||
+          !Number.isSafeInteger(cursor.offset) ||
+          Number(cursor.offset) < 0
         )
-          ? text(cursor.inheritedBefore)
-          : undefined,
-        harness: ["codex", "claude", "pi"].includes(text(cursor.harness))
-          ? (cursor.harness as SkillHarness)
-          : undefined,
-        skippingLine: cursor.skippingLine === true,
-        awaitingAppend: cursor.awaitingAppend === true,
-        ...(text(cursor.oldestAt) ? { oldestAt: text(cursor.oldestAt) } : {}),
-        ...(text(cursor.newestAt) ? { newestAt: text(cursor.newestAt) } : {}),
-        errors: array(cursor.errors).map(text),
-        cwd: isAbsolute(text(cursor.cwd)) ? text(cursor.cwd) : "",
-        omittedHistory: cursor.omittedHistory === true,
-        pending: array(cursor.pending)
-          .slice(-128)
-          .flatMap((value) => {
-            const pending = object(value);
-            const skillNames = array(pending.names).flatMap((name) =>
-              names.has(text(name).split("\0")[0]!) &&
-              (!text(name).includes("\0") ||
-                [...pathNames.values()].includes(text(name)))
-                ? [text(name)]
-                : [],
-            );
-            return text(pending.id).length <= 256 &&
-              skillNames.length &&
-              ["invoke", "read", "load"].includes(text(pending.evidence)) &&
-              Number.isFinite(Date.parse(text(pending.at)))
-              ? [
-                  {
-                    id: text(pending.id),
-                    names: skillNames,
-                    evidence: pending.evidence as Pending["evidence"],
-                    at: text(pending.at),
-                  },
-                ]
-              : [];
-          }),
-      };
+          continue;
+        cache.files[key] = {
+          identity: cursor.identity,
+          offset: Number(cursor.offset),
+          mtimeMs: Number(cursor.mtimeMs) || 0,
+          sessionId: text(cursor.sessionId).slice(0, 256),
+          inheritedBefore: Number.isFinite(
+            Date.parse(text(cursor.inheritedBefore)),
+          )
+            ? text(cursor.inheritedBefore)
+            : undefined,
+          harness: ["codex", "claude", "pi"].includes(text(cursor.harness))
+            ? (cursor.harness as SkillHarness)
+            : undefined,
+          skippingLine: cursor.skippingLine === true,
+          awaitingAppend: cursor.awaitingAppend === true,
+          ...(text(cursor.oldestAt) ? { oldestAt: text(cursor.oldestAt) } : {}),
+          ...(text(cursor.newestAt) ? { newestAt: text(cursor.newestAt) } : {}),
+          errors: array(cursor.errors).map(text),
+          cwd: isAbsolute(text(cursor.cwd)) ? text(cursor.cwd) : "",
+          omittedHistory: cursor.omittedHistory === true,
+          pending: array(cursor.pending)
+            .slice(-128)
+            .flatMap((value) => {
+              const pending = object(value);
+              const skillNames = array(pending.names).flatMap((name) =>
+                names.has(text(name).split("\0")[0]!) &&
+                (!text(name).includes("\0") || knownPathNames.has(text(name)))
+                  ? [text(name)]
+                  : [],
+              );
+              return text(pending.id).length <= 256 &&
+                skillNames.length &&
+                ["invoke", "read", "load"].includes(text(pending.evidence)) &&
+                Number.isFinite(Date.parse(text(pending.at)))
+                ? [
+                    {
+                      id: text(pending.id),
+                      names: skillNames,
+                      evidence: pending.evidence as Pending["evidence"],
+                      at: text(pending.at),
+                    },
+                  ]
+                : [];
+            }),
+        };
+      }
+      cache.events = array(stored.events)
+        .slice(-LIMITS.events)
+        .flatMap((value) => {
+          const event = object(value);
+          return /^[a-f0-9]{64}$/.test(text(event.id)) &&
+            names.has(text(event.name)) &&
+            (event.evidence !== "read" ||
+              knownPathNames.has(
+                `${text(event.name)}\0${text(event.pathId)}`,
+              )) &&
+            ["codex", "claude", "pi"].includes(text(event.harness)) &&
+            ["invoke", "read", "load"].includes(text(event.evidence)) &&
+            Number.isFinite(Date.parse(text(event.at)))
+            ? [
+                {
+                  id: text(event.id),
+                  name: text(event.name),
+                  harness: event.harness as SkillHarness,
+                  evidence: event.evidence as SkillUsageEvent["evidence"],
+                  at: text(event.at),
+                  ...(event.pathId ? { pathId: text(event.pathId) } : {}),
+                  ...(/^[a-f0-9]{64}$/.test(text(event.sessionId))
+                    ? { sessionId: text(event.sessionId) }
+                    : {}),
+                },
+              ]
+            : [];
+        });
     }
-    cache.events = array(stored.events)
-      .slice(-LIMITS.events)
-      .flatMap((value) => {
-        const event = object(value);
-        return /^[a-f0-9]{64}$/.test(text(event.id)) &&
-          names.has(text(event.name)) &&
-          (event.evidence !== "read" ||
-            [...pathNames.values()].includes(
-              `${text(event.name)}\0${text(event.pathId)}`,
-            )) &&
-          ["codex", "claude", "pi"].includes(text(event.harness)) &&
-          ["invoke", "read", "load"].includes(text(event.evidence)) &&
-          Number.isFinite(Date.parse(text(event.at)))
-          ? [
-              {
-                id: text(event.id),
-                name: text(event.name),
-                harness: event.harness as SkillHarness,
-                evidence: event.evidence as SkillUsageEvent["evidence"],
-                at: text(event.at),
-                ...(event.pathId ? { pathId: text(event.pathId) } : {}),
-                ...(/^[a-f0-9]{64}$/.test(text(event.sessionId))
-                  ? { sessionId: text(event.sessionId) }
-                  : {}),
-              },
-            ]
-          : [];
-      });
   } catch (error) {
+    validatedCaches.delete(cachePath);
     if ((error as NodeJS.ErrnoException).code !== "ENOENT")
       limits.add("cache_unavailable");
   }
@@ -519,8 +556,7 @@ async function scanLocked(options: {
   for (const event of journal.events)
     if (
       names.has(event.name) &&
-      (!event.pathId ||
-        [...pathNames.values()].includes(`${event.name}\0${event.pathId}`))
+      (!event.pathId || knownPathNames.has(`${event.name}\0${event.pathId}`))
     ) {
       const prior = events.get(event.id);
       if (!prior || Date.parse(event.at) < Date.parse(prior.at))
@@ -863,18 +899,19 @@ async function scanLocked(options: {
   const ordered = candidates.sort((a, b) =>
     backfill ? a.modified - b.modified : b.modified - a.modified,
   );
-  if (ordered.length > LIMITS.files) limits.add("files");
+  const fileBudget = backfill ? BACKFILL_BATCH_SIZE : LIMITS.files;
+  if (ordered.length > fileBudget) limits.add("files");
   const fairFiles: Candidate[] = [];
   const byHarness = (["codex", "claude", "pi"] as const).map((harness) =>
     ordered.filter((file) => file.harness === harness),
   );
   for (
     let index = 0;
-    index < LIMITS.files && fairFiles.length < LIMITS.files;
+    index < fileBudget && fairFiles.length < fileBudget;
     index += 1
   )
     for (const files of byHarness) {
-      if (files[index] && fairFiles.length < LIMITS.files)
+      if (files[index] && fairFiles.length < fileBudget)
         fairFiles.push(files[index]!);
     }
   for (const file of fairFiles) {
@@ -1046,14 +1083,21 @@ async function scanLocked(options: {
     const cursors = Object.values(cache.files).filter(
       (cursor) => cursor.harness === harness,
     );
-    const oldest = cursors
-      .map((c) => c.oldestAt)
-      .filter((at): at is string => !!at)
-      .sort((a, b) => Date.parse(a) - Date.parse(b));
-    const newest = cursors
-      .map((c) => c.newestAt)
-      .filter((at): at is string => !!at)
-      .sort((a, b) => Date.parse(b) - Date.parse(a));
+    let oldest: string | undefined, newest: string | undefined;
+    let oldestTime = Infinity,
+      newestTime = -Infinity;
+    for (const cursor of cursors) {
+      const start = cursor.oldestAt ? Date.parse(cursor.oldestAt) : NaN;
+      const end = cursor.newestAt ? Date.parse(cursor.newestAt) : NaN;
+      if (start < oldestTime) {
+        oldestTime = start;
+        oldest = cursor.oldestAt;
+      }
+      if (end > newestTime) {
+        newestTime = end;
+        newest = cursor.newestAt;
+      }
+    }
     const pending = cursors.reduce((sum, c) => sum + c.pending.length, 0);
     const limitations = [
       ...new Set([
@@ -1080,8 +1124,8 @@ async function scanLocked(options: {
             : "absent",
       filesScanned: cursors.length,
       pendingCalls: pending,
-      ...(oldest[0] ? { oldestAt: oldest[0] } : {}),
-      ...(newest[0] ? { newestAt: newest[0] } : {}),
+      ...(oldest ? { oldestAt: oldest } : {}),
+      ...(newest ? { newestAt: newest } : {}),
       limitations,
     };
   });
@@ -1159,14 +1203,32 @@ async function scanLocked(options: {
       await mkdir(dirname(cachePath), { recursive: true });
       const pending = `${cachePath}.${randomUUID()}.tmp`;
       await writeFile(pending, JSON.stringify(cache), { mode: 0o600 });
-      await rename(pending, cachePath);
+      // Keep the file handle across rename: ctime can change when a file moves.
+      const checkpointHandle = await open(
+        pending,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      let checkpoint;
+      try {
+        await rename(pending, cachePath);
+        checkpoint = await checkpointHandle.stat();
+      } finally {
+        await checkpointHandle.close();
+      }
       if (backfillReport)
         await atomicUsageJson(join(directory, "coverage.json"), {
           fingerprint: knownFingerprint,
           harnessCoverage,
           backfill: backfillReport,
         });
+      validatedCaches.set(cachePath, {
+        identity: checkpointIdentity(checkpoint),
+        cache,
+      });
+      if (validatedCaches.size > 2)
+        validatedCaches.delete(validatedCaches.keys().next().value!);
     } catch {
+      validatedCaches.delete(cachePath);
       limits.add("cache_write_failed");
     }
   }

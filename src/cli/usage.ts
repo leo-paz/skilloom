@@ -8,6 +8,10 @@ import {
 } from "../core/config.js";
 import { scanSkillUsage } from "../core/skill-usage.js";
 import type { MachineInventory } from "../core/types.js";
+import {
+  backfillBudgetMilliseconds,
+  UsageBackfillBudget,
+} from "../core/usage-budget.js";
 import { collectUsageHook, configureUsageHooks } from "../core/usage-hooks.js";
 import {
   recordHookUsage,
@@ -167,13 +171,15 @@ export async function usageCommand(
   }
   if (action !== "backfill" && action !== "refresh")
     throw new Error(
-      "Usage: skilloom usage status|install|uninstall|backfill [--once] [--restart]|refresh|publish [--dry-run]",
+      "Usage: skilloom usage status|install|uninstall|backfill [--once] [--restart] [--max-seconds 1..180]|refresh|publish [--dry-run]",
     );
   const abort = new AbortController();
+  const budget = new UsageBackfillBudget(backfillBudgetMilliseconds(args));
   const stop = () => abort.abort();
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   let passes = 0;
+  budget.start();
   try {
     do {
       const inventory = await loadInventorySnapshot(paths.inventoryPath);
@@ -186,6 +192,7 @@ export async function usageCommand(
         abort.signal,
         passes === 0 && args.includes("--restart"),
       );
+      if (action === "backfill") budget.mark(next.skillUsage);
       await saveUsageIfCurrent(paths.inventoryPath, inventory, next);
       passes++;
       runtime.stdout(
@@ -193,6 +200,12 @@ export async function usageCommand(
           ok: true,
           command: `usage ${action}`,
           passes,
+          ...(action === "backfill"
+            ? {
+                timeBudgetSeconds: budget.milliseconds / 1000,
+                paused: next.skillUsage?.backfill?.paused === "time_limit",
+              }
+            : {}),
           backfill: next.skillUsage?.backfill,
           coverage: next.skillUsage?.harnessCoverage,
           events: next.skillUsage?.history?.length,
@@ -202,6 +215,7 @@ export async function usageCommand(
         action === "refresh" ||
         args.includes("--once") ||
         next.skillUsage?.backfill?.complete ||
+        next.skillUsage?.backfill?.paused === "time_limit" ||
         abort.signal.aborted
       )
         break;

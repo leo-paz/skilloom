@@ -1,6 +1,79 @@
+import type { Dirent } from "node:fs";
 import { lstat, opendir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SkillHarness } from "./skill-usage.js";
+export const BACKFILL_BATCH_SIZE = 192;
+
+// Keep a bounded page of directory entries between collector passes. A persisted
+// ordinal still resumes after process restarts, but steady-state batches no longer
+// reopen a large directory and walk its entire prefix for every 192 files.
+const directoryPages = new Map<
+  string,
+  {
+    identity: string;
+    modified: number;
+    start: number;
+    entries: Dirent[];
+    complete: boolean;
+  }
+>();
+async function* directoryEntries(
+  path: string,
+  identity: string,
+  modified: number,
+  skip: number,
+  stopped: () => boolean,
+): AsyncGenerator<Dirent> {
+  let position = skip;
+  while (!stopped()) {
+    let page = directoryPages.get(path);
+    if (
+      !page ||
+      page.identity !== identity ||
+      page.modified !== modified ||
+      position < page.start ||
+      position >= page.start + page.entries.length
+    ) {
+      if (
+        page?.identity === identity &&
+        page.modified === modified &&
+        page.complete &&
+        position === page.start + page.entries.length
+      )
+        return;
+      page = {
+        identity,
+        modified,
+        start: position,
+        entries: [],
+        complete: true,
+      };
+      const dir = await opendir(path);
+      let ordinal = 0;
+      for await (const entry of dir) {
+        if (stopped()) {
+          page.complete = false;
+          break;
+        }
+        if (ordinal++ < position) continue;
+        if (page.entries.length >= 4096) {
+          page.complete = false;
+          break;
+        }
+        page.entries.push(entry);
+      }
+      directoryPages.delete(path);
+      directoryPages.set(path, page);
+      if (directoryPages.size > 8)
+        directoryPages.delete(directoryPages.keys().next().value!);
+    }
+    const entry = page.entries[position - page.start];
+    if (!entry) return;
+    position++;
+    yield entry;
+  }
+}
+
 export interface UsageCandidate {
   path: string;
   harness: SkillHarness;
@@ -39,7 +112,7 @@ export async function discoverBackfill(
   let entries = 0;
   while (
     state.queue.length &&
-    state.pending.length < 48 &&
+    state.pending.length < BACKFILL_BATCH_SIZE &&
     entries < 6000 &&
     !stopped()
   ) {
@@ -51,7 +124,7 @@ export async function discoverBackfill(
     const reserved = state.pending.filter(
       (item) => !active.has(item.harness),
     ).length;
-    const quota = Math.floor((48 - reserved) / active.size);
+    const quota = Math.floor((BACKFILL_BATCH_SIZE - reserved) / active.size);
     const eligible = state.queue.findIndex(
       (item) => counts[item.harness] < quota,
     );
@@ -76,18 +149,24 @@ export async function discoverBackfill(
       }
       current.identity = identity;
       current.modified = directory.mtimeMs;
-      const dir = await opendir(current.path);
-      let position = 0,
+      const dir = directoryEntries(
+        current.path,
+        identity,
+        directory.mtimeMs,
+        current.skip,
+        stopped,
+      );
+      let position = current.skip,
         exhausted = true;
       for await (const entry of dir) {
         if (stopped()) {
           exhausted = false;
           break;
         }
-        if (position++ < current.skip) continue;
+        position++;
         if (
           entries >= 6000 ||
-          state.pending.length >= 48 ||
+          state.pending.length >= BACKFILL_BATCH_SIZE ||
           counts[current.harness] >= quota
         ) {
           exhausted = false;
@@ -124,6 +203,7 @@ export async function discoverBackfill(
           } else state.pending[pending] = candidate;
         }
       }
+      if (stopped()) exhausted = false;
       const after = await lstat(current.path);
       if (
         `${after.dev}:${after.ino}` !== identity ||
@@ -131,11 +211,15 @@ export async function discoverBackfill(
       ) {
         // Enumeration order can change while reading. Rescan this directory;
         // existing file cursors and pending-path deduplication prevent double reads.
+        directoryPages.delete(current.path);
         current.skip = 0;
         current.identity = `${after.dev}:${after.ino}`;
         current.modified = after.mtimeMs;
         state.skipped.push("directory_changed");
-      } else if (exhausted) state.queue.shift();
+      } else if (exhausted) {
+        directoryPages.delete(current.path);
+        state.queue.shift();
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT")
         state.skipped.push("unreadable");

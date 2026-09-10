@@ -74,9 +74,9 @@ Exit codes: 0 success, 1 migration preview blocker, 2 drift or unresolved verifi
             3 invalid/unavailable state, 4 execution/diagnostic failure, 5 cancellation or changed sync plan`;
 
 const commandHelp: Record<string, string> = {
-  usage: `Usage: skilloom usage status|install|uninstall|refresh|backfill [--once] [--restart]|publish [--dry-run]
+  usage: `Usage: skilloom usage status|install|uninstall|refresh|backfill [--once] [--restart] [--max-seconds 1..180]|publish [--dry-run]
 
-Install hooks locally, refresh recent evidence, or resume bounded history backfill. Ctrl-C pauses safely. Preview sharing with usage publish --dry-run, then publish with usage publish.`,
+Install hooks locally, refresh recent evidence, or resume history backfill. Backfill checkpoints after two minutes by default; run it again to continue. Ctrl-C pauses safely. Preview sharing with usage publish --dry-run, then publish with usage publish.`,
   tui: `Usage: skilloom [tui] [--config PATH]
 
 Open a full-screen skill library. Search with /, switch views with 1–4 or Tab, inspect with Enter, refresh with r, and review sync with s. Press ? for all keys.`,
