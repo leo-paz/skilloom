@@ -49,6 +49,7 @@ npm view skilloom dist-tags --json
 
 ## Failure handling
 
+- Verification runs the unit and integration suite with Node/Vitest, then exercises the packaged CLI and PTY flows under Node and Bun. Bun runtime acceptance does not imply native Bun test-runner coverage.
 - A failed verification job publishes nothing.
 - A failed canary leaves the release pull request intact. Re-run the workflow after fixing authentication or registry availability.
 - Stable publishing uses a different version from canary snapshots, so a canary cannot consume the production version.

@@ -29,6 +29,56 @@ async function fixture(
   return { home, root, file, env, skill, read: createSkillMetadataReader(env) };
 }
 describe("bounded harness-specific declaration metadata", () => {
+  it("reads qualified declaration names from their observed installation path", async () => {
+    const f = await fixture("codex");
+    await writeFile(
+      f.file,
+      "---\nname: n8n:review\ndescription: Review\n---\n",
+    );
+    const result = await f.read(
+      { ...f.skill, name: "n8n:review", path: f.root },
+      f.home,
+    );
+    expect(result.invocation).toBe("both");
+    expect(result.variants).toEqual([
+      { agent: "codex", invocation: "both", status: "read" },
+    ]);
+    // A qualified command name does not establish its on-disk directory name.
+    expect(
+      (await f.read({ ...f.skill, name: "n8n:review" }, f.home)).invocation,
+    ).toBe("unknown");
+  });
+  it("does not use traversal names even when an observed path is provided", async () => {
+    const f = await fixture("codex");
+    await writeFile(f.file, "---\nname: ../review\n---\n");
+    expect(
+      (await f.read({ ...f.skill, name: "../review", path: f.root }, f.home))
+        .invocation,
+    ).toBe("unknown");
+  });
+  it("uses Windows home fallback and Pi's configured global directory", async () => {
+    const f = await fixture("claude-code");
+    expect(
+      (await createSkillMetadataReader({ USERPROFILE: f.home })(f.skill, "/"))
+        .invocation,
+    ).toBe("both");
+    const piRoot = join(f.home, "custom-pi", "skills", "review");
+    await mkdir(piRoot, { recursive: true });
+    await writeFile(
+      join(piRoot, "SKILL.md"),
+      "---\nname: review\ndescription: Review\ndisable-model-invocation: true\n---\n",
+    );
+    const result = await createSkillMetadataReader({
+      USERPROFILE: f.home,
+      PI_CODING_AGENT_DIR: join(f.home, "custom-pi"),
+    })({ ...f.skill, agents: ["pi"] }, "/");
+    expect(result.invocation).toBe("manual");
+    const tildeResult = await createSkillMetadataReader({
+      USERPROFILE: f.home,
+      PI_CODING_AGENT_DIR: "~/custom-pi",
+    })({ ...f.skill, agents: ["pi"] }, "/");
+    expect(tildeResult.invocation).toBe("manual");
+  });
   it.each([
     ["", "both"],
     ["disable-model-invocation: true", "manual"],
@@ -50,6 +100,45 @@ describe("bounded harness-specific declaration metadata", () => {
       (await createSkillMetadataReader(f.env)(f.skill, f.home)).invocation,
     ).toBe("manual");
   });
+  it.each([
+    ["", "both"],
+    ["disable-model-invocation: true", "manual"],
+    ["user-invocable: false", "automatic"],
+    ["disable-model-invocation: true\nuser-invocable: false", "disabled"],
+    ["disable-model-invocation: 'YES'\nuser-invocable: 1", "manual"],
+    ["disable-model-invocation: 'off'\nuser-invocable: 'no'", "automatic"],
+    [
+      "disable-model-invocation: unexpected\nuser-invocable: unexpected",
+      "both",
+    ],
+    ["disable-model-invocation: {toString: yes}", "both"],
+  ])(
+    "interprets OpenClaw declaration %s using its boolean defaults",
+    async (flags, invocation) => {
+      const f = await fixture("openclaw", `description: Review\n${flags}`);
+      const result = await f.read({ ...f.skill, path: f.root }, f.home);
+      expect(result.invocation).toBe(invocation);
+      expect(result.variants[0]?.status).toBe("read");
+    },
+  );
+  it.each([
+    ["", "unknown"],
+    ["description:", "unknown"],
+    ["description: '   '", "unknown"],
+    ["description: 123", "both"],
+    ["description: false", "both"],
+    ["description: null", "both"],
+  ])(
+    "requires OpenClaw's nonempty parsed description: %s",
+    async (fields, invocation) => {
+      const f = await fixture("openclaw", fields);
+      const result = await f.read({ ...f.skill, path: f.root }, f.home);
+      expect(result.invocation).toBe(invocation);
+      expect(result.variants[0]?.status).toBe(
+        invocation === "unknown" ? "invalid" : "read",
+      );
+    },
+  );
   it("reports mixed known harness declarations and publishes no local path or prose", async () => {
     const f = await fixture(
       "claude-code",

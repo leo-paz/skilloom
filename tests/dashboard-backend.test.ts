@@ -1,6 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { expect, it } from "vitest";
 import { runProcess } from "../src/adapters/skills.js";
 import type { CliRuntime } from "../src/cli/runtime.js";
@@ -87,10 +88,11 @@ it("cancels an inventory read and waits for its process runner to stop", async (
   expect(await runCli(["init", "--yes", "--json"], runtime)).toBe(0);
   const backend = createDashboardBackend(runtime, runCli);
   const read = backend.load(true, () => {});
-  const rejected = expect(read).rejects.toThrow();
+  // Capture the rejection before cancellation; Bun evaluates .rejects eagerly.
+  const outcome = read.catch((error: unknown) => error);
   await ready;
   await backend.cancelRead();
-  await rejected;
+  expect(await outcome).toBeInstanceOf(Error);
   expect(stopped).toBe(true);
 });
 
@@ -115,23 +117,22 @@ it.skipIf(process.platform === "win32")(
         ready();
       },
     });
-    const rejected = expect(child).rejects.toThrow(/abort/i);
+    const outcome = child.catch((error: unknown) => error);
     await started;
     controller.abort();
-    await rejected;
+    expect(await outcome).toBeInstanceOf(Error);
+    expect(String(await outcome)).toMatch(/abort/i);
     expect(descendant).toBeGreaterThan(0);
-    await expect
-      .poll(
-        () => {
-          try {
-            process.kill(descendant, 0);
-            return true;
-          } catch {
-            return false;
-          }
-        },
-        { timeout: 2000 },
-      )
-      .toBe(false);
+    const isAlive = () => {
+      try {
+        process.kill(descendant, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const deadline = Date.now() + 2000;
+    while (isAlive() && Date.now() < deadline) await delay(20);
+    expect(isAlive()).toBe(false);
   },
 );

@@ -32,6 +32,51 @@ const mount = (width = 120, api = backend()) => {
 };
 
 describe("full-screen skill library", () => {
+  it("keeps missing requirements from obscuring an installed copy's invocation", () => {
+    const inventory = inventoryFixture();
+    inventory.remoteObservations![0]!.globalSkills = [
+      { ...inventory.globalSkills[0]!, installed: false },
+    ];
+    delete inventory.remoteObservations![0]!.globalSkills![0]!.metadata;
+    expect(
+      buildLibrary(inventory).find((entry) => entry.name === "code-review")
+        ?.invocation,
+    ).toBe("automatic");
+    inventory.globalSkills[0]!.installed = false;
+    expect(
+      buildLibrary(inventory).find((entry) => entry.name === "code-review")
+        ?.invocation,
+    ).toBe("not-installed");
+  });
+  it("explains unsupported invocation readers instead of showing a bare unknown", async () => {
+    const inventory = inventoryFixture();
+    inventory.globalSkills[0]!.metadata = {
+      source: "skill-declaration",
+      readerVersion: 2,
+      invocation: "unknown",
+      variants: [
+        {
+          agent: "example-agent",
+          status: "unsupported",
+          invocation: "unknown",
+        },
+      ],
+    };
+    const app = render(
+      <SkilloomApp
+        initialInventory={inventory}
+        backend={backend()}
+        width={120}
+        height={32}
+      />,
+    );
+    mounted.push(app);
+    await tick();
+    app.stdin.write("i");
+    await tick();
+    expect(app.lastFrame()).toContain("Reader missing");
+    expect(app.lastFrame()).toContain("example-agent");
+  });
   it("checks this machine from a remote-filtered library and returns to the same search and selection", async () => {
     const api = {
       ...backend(),
@@ -115,13 +160,18 @@ describe("full-screen skill library", () => {
     const enriched = inventoryFixture();
     enriched.projects[0]!.checkouts[0]!.skills![0]!.metadata = {
       source: "skill-declaration",
+      readerVersion: 2,
       invocation: "unknown",
       variants: [],
     };
     finish(enriched);
-    await vi.waitFor(() => {
-      expect(app.lastFrame()).not.toContain("Loading skill metadata");
-    });
+    const deadline = Date.now() + 1000;
+    while (
+      app.lastFrame()?.includes("Loading skill metadata") &&
+      Date.now() < deadline
+    )
+      await tick();
+    expect(app.lastFrame()).not.toContain("Loading skill metadata");
     expect(app.lastFrame()).toContain("› design-system");
     app.stdin.write("\u001b[A");
     await tick();

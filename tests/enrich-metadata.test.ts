@@ -136,6 +136,31 @@ it("aborts before reading or saving metadata", async () => {
     ),
   ).rejects.toThrow(/abort/i);
 });
+it("refreshes existing local declarations without changing remote metadata", async () => {
+  const { home, env } = await environment();
+  const stale = fixture(home);
+  const oldMetadata = {
+    source: "skill-declaration" as const,
+    invocation: "unknown" as const,
+    variants: [],
+  };
+  stale.globalSkills[0]!.metadata = oldMetadata;
+  stale.projects[0]!.skills[0]!.metadata = oldMetadata;
+  stale.projects[0]!.checkouts[0]!.skills![0]!.metadata = oldMetadata;
+  stale.remoteObservations![0]!.globalSkills![0]!.metadata = oldMetadata;
+  const remoteBefore = structuredClone(stale.remoteObservations);
+  const result = await enrichInventoryMetadata(
+    stale,
+    env,
+    join(home, "cache.json"),
+  );
+  expect(result.globalSkills[0]!.metadata!.invocation).toBe("manual");
+  expect(result.projects[0]!.skills[0]!.metadata!.invocation).toBe("manual");
+  expect(
+    result.projects[0]!.checkouts[0]!.skills![0]!.metadata!.invocation,
+  ).toBe("manual");
+  expect(result.remoteObservations).toEqual(remoteBefore);
+});
 it("persists enrichment only when the saved snapshot still matches and never starts a subprocess", async () => {
   const { home, env } = await environment();
   const original = fixture(home);

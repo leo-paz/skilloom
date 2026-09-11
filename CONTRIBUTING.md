@@ -12,4 +12,6 @@ git status --short
 
 Tests must use temporary homes, repositories, and skill sources. Never point a test at the developer's global skill directory. Do not record credentials, absolute home paths, ANSI snapshots, or generated acceptance state.
 
+`npm test` runs the unit and integration suite with Vitest under Node. Bun support is checked by executing the packaged CLI and interactive PTY flows under Bun, included in `npm run verify`. Native `bun test` is not a supported runner for this Vitest suite; its partial mock and assertion APIs differ.
+
 Use the existing exit codes and JSON envelopes for public command behavior. Update the README and tests together when a command, schema, or output contract changes.

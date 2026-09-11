@@ -14,9 +14,11 @@ const skillInvocationSchema = z.enum([
   "unknown",
 ]);
 export type SkillInvocation = z.infer<typeof skillInvocationSchema>;
+export const skillMetadataReaderVersion = 2;
 /** Published declaration facts only; never includes local paths or skill instructions. */
 export const skillMetadataSchema = z.object({
   source: z.literal("skill-declaration"),
+  readerVersion: z.literal(skillMetadataReaderVersion).optional(),
   invocation: skillInvocationSchema,
   variants: z
     .array(
@@ -30,6 +32,9 @@ export const skillMetadataSchema = z.object({
 });
 /** Harness overrides, permissions, runtime configuration and actual usage are not inspected. */
 export type SkillMetadata = z.infer<typeof skillMetadataSchema>;
+export function needsSkillMetadataRefresh(metadata: SkillMetadata | undefined) {
+  return metadata?.readerVersion !== skillMetadataReaderVersion;
+}
 export interface SkillMetadataInput {
   name: string;
   scope: Scope;
@@ -64,6 +69,36 @@ function booleanField(value: unknown, fallback: boolean): boolean | undefined {
     : typeof value === "boolean"
       ? value
       : undefined;
+}
+function openClawBooleanField(value: unknown, fallback: boolean): boolean {
+  // OpenClaw converts scalar frontmatter to strings and accepts these tokens.
+  // Unrecognized values use its documented default, unlike Claude's strict flags.
+  if (!["string", "number", "boolean"].includes(typeof value)) return fallback;
+  const token = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(token)) return true;
+  if (["false", "0", "no", "off"].includes(token)) return false;
+  return fallback;
+}
+function hasOpenClawDescription(
+  fields: Record<string, unknown>,
+  frontmatter: string,
+): boolean {
+  const value = fields.description;
+  // OpenClaw coerces YAML scalar values to text. Its line-parser fallback also
+  // preserves explicit null tokens; an absent or blank description is rejected.
+  if (value === null || value === undefined)
+    return Boolean(frontmatter.match(/^description:[\t ]*(.*)$/m)?.[1]?.trim());
+  if (typeof value === "string") return Boolean(value.trim());
+  return ["number", "boolean", "object"].includes(typeof value);
+}
+function expandPiDirectory(path: string, home: string): string {
+  if (path === "~") return home;
+  if (
+    path.startsWith("~/") ||
+    (process.platform === "win32" && path.startsWith("~\\"))
+  )
+    return join(home, path.slice(2));
+  return path;
 }
 
 /** Construct once per inventory scan. Cached reads are bounded and shared across symlink aliases. */
@@ -140,24 +175,28 @@ export function createSkillMetadataReader(env: NodeJS.ProcessEnv) {
       ),
     ].sort();
     if (
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(skill.name) ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(skill.name) ||
       agents.length > 128 ||
       agents.some((agent) => !agent || agent.length > 128)
     )
       return {
         source: "skill-declaration",
+        readerVersion: skillMetadataReaderVersion,
         invocation: "unknown",
         variants: [],
       };
     for (const agent of agents) {
-      if (!["claude-code", "codex", "pi"].includes(agent)) {
+      if (!["claude-code", "codex", "pi", "openclaw"].includes(agent)) {
         variants.push({ agent, invocation: "unknown", status: "unsupported" });
         continue;
       }
-      const base = skill.scope === "project" ? cwd : env.HOME;
+      const base =
+        skill.scope === "project" ? cwd : env.HOME || env.USERPROFILE;
       const directories: string[] = [];
       if (skill.path) directories.push(resolve(cwd, skill.path));
-      if (base) {
+      // Qualified command names need an observed path. Never infer a directory
+      // from a namespace or turn a colon into a Windows drive/stream reference.
+      if (base && !skill.name.includes(":") && agent !== "openclaw") {
         if (agent === "claude-code")
           directories.push(
             join(
@@ -180,9 +219,13 @@ export function createSkillMetadataReader(env: NodeJS.ProcessEnv) {
                   skill.name,
                 )
               : join(
-                  base,
-                  ".pi",
-                  ...(skill.scope === "global" ? ["agent"] : []),
+                  skill.scope === "global" && env.PI_CODING_AGENT_DIR
+                    ? expandPiDirectory(env.PI_CODING_AGENT_DIR, base)
+                    : join(
+                        base,
+                        ".pi",
+                        ...(skill.scope === "global" ? ["agent"] : []),
+                      ),
                   "skills",
                   skill.name,
                 ),
@@ -246,21 +289,21 @@ export function createSkillMetadataReader(env: NodeJS.ProcessEnv) {
         } else {
           // Claude: https://code.claude.com/docs/en/skills#control-who-invokes-a-skill
           // Pi: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md
+          // OpenClaw: https://docs.openclaw.ai/tools/skills#optional-frontmatter-keys
           // Pi ignores user-invocable; command enablement is a separate runtime setting.
-          const automatic = booleanField(
-            fields["disable-model-invocation"],
-            false,
-          );
+          const flag =
+            agent === "openclaw" ? openClawBooleanField : booleanField;
+          const automatic = flag(fields["disable-model-invocation"], false);
           const manual =
-            agent === "pi"
-              ? true
-              : booleanField(fields["user-invocable"], true);
+            agent === "pi" ? true : flag(fields["user-invocable"], true);
           if (
             automatic === undefined ||
             manual === undefined ||
             (agent === "pi" &&
               (typeof fields.description !== "string" ||
-                !fields.description.trim()))
+                !fields.description.trim())) ||
+            (agent === "openclaw" &&
+              !hasOpenClawDescription(fields, frontmatter!))
           )
             invalid = true;
           else
@@ -283,6 +326,7 @@ export function createSkillMetadataReader(env: NodeJS.ProcessEnv) {
     }
     return {
       source: "skill-declaration",
+      readerVersion: skillMetadataReaderVersion,
       invocation: combine(
         variants
           .filter(

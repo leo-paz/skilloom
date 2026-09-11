@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import wrapAnsi from "wrap-ansi";
 import type { InstallationDiagnosticsReport } from "../core/installation-diagnostics.js";
 import { installationDirectoryLabel } from "../core/installation-directories.js";
+import { needsSkillMetadataRefresh } from "../core/skill-metadata.js";
 import type { InventoryProgress, MachineInventory } from "../core/types.js";
 import {
   buildLibrary,
@@ -414,8 +415,9 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       );
     const variants = record.metadata?.variants ?? [];
     const mode = record.metadata?.invocation ?? "unknown";
-    const modeLabel =
-      mode === "unknown"
+    const modeLabel = !record.installed
+      ? "Not installed"
+      : mode === "unknown"
         ? "Unknown"
         : mode === "both"
           ? "Manual + automatic"
@@ -467,11 +469,31 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
     const unsupported = variants.filter(
       (variant) => variant.status === "unsupported",
     );
-    if (unsupported.length && mode !== "unknown")
+    if (unsupported.length && record.installed)
       behavior.push(
         ...field(
-          "Unknown for",
+          "Reader missing",
           unsupported.map((variant) => variant.agent).join(", "),
+          columnWidth,
+          color.muted,
+        ),
+      );
+    if (record.installed && !record.metadata)
+      behavior.push(
+        ...field(
+          "Not collected",
+          record.stale
+            ? "Refresh on this machine and publish its observation."
+            : "Refresh local inventory to read declarations.",
+          columnWidth,
+          color.muted,
+        ),
+      );
+    else if (record.installed && mode === "unknown" && variants.length === 0)
+      behavior.push(
+        ...field(
+          "No declaration",
+          "No supported installation path or agent was identified.",
           columnWidth,
           color.muted,
         ),
@@ -841,7 +863,8 @@ export function SkilloomApp({
       localSkills.every(
         (skill) =>
           !skill.installed ||
-          (skill.metadata && skill.installationDirectories !== undefined),
+          (!needsSkillMetadataRefresh(skill.metadata) &&
+            skill.installationDirectories !== undefined),
       )
     ) {
       setEnriching(false);

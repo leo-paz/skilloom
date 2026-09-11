@@ -1,6 +1,8 @@
 import {
   createSkillMetadataReader,
+  needsSkillMetadataRefresh,
   type SkillMetadata,
+  skillMetadataReaderVersion,
 } from "./skill-metadata.js";
 import { scanSkillUsage } from "./skill-usage.js";
 import type { InventorySkill, MachineInventory } from "./types.js";
@@ -18,7 +20,7 @@ export async function enrichInventoryMetadata(
   const readMetadata = createSkillMetadataReader(env);
   const work: Array<{ skill: InventorySkill; cwd: string }> = [];
   for (const skill of enriched.globalSkills) {
-    if (skill.installed && !skill.metadata)
+    if (skill.installed && needsSkillMetadataRefresh(skill.metadata))
       work.push({ skill, cwd: env.HOME || env.USERPROFILE || "/" });
   }
   const projectOccurrences = new Map<string, InventorySkill[]>();
@@ -32,7 +34,7 @@ export async function enrichInventoryMetadata(
         project.skills.map((skill) => structuredClone(skill));
       for (const skill of skills) {
         occurrences.push(skill);
-        if (skill.installed && !skill.metadata)
+        if (skill.installed && needsSkillMetadataRefresh(skill.metadata))
           work.push({ skill, cwd: checkout.path });
       }
     }
@@ -52,7 +54,7 @@ export async function enrichInventoryMetadata(
   );
   for (const project of enriched.projects) {
     for (const skill of project.skills) {
-      if (skill.metadata) continue;
+      if (!needsSkillMetadataRefresh(skill.metadata)) continue;
       const declarations = (projectOccurrences.get(project.id) ?? [])
         .filter((item) => item.name === skill.name && item.metadata)
         .map((item) => item.metadata!);
@@ -64,6 +66,7 @@ export async function enrichInventoryMetadata(
           variants.set(JSON.stringify(variant), variant);
       skill.metadata = {
         source: "skill-declaration",
+        readerVersion: skillMetadataReaderVersion,
         invocation: modes.has("unknown")
           ? "unknown"
           : modes.size === 1

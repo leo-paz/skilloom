@@ -46,10 +46,12 @@ function group(
     .map(([name, occurrences]) => {
       const invocations = [
         ...new Set(
-          occurrences.map((record) => {
-            const mode = record.metadata?.invocation ?? "unknown";
-            return mode === "both" ? "automatic" : mode;
-          }),
+          occurrences
+            .filter((record) => record.installed)
+            .map((record) => {
+              const mode = record.metadata?.invocation ?? "unknown";
+              return mode === "both" ? "automatic" : mode;
+            }),
         ),
       ];
       const presentOwners = new Set(occurrences.map(ownershipLabel));
@@ -61,11 +63,13 @@ function group(
         name,
         usageMachines,
         invocation:
-          invocations.length === 1
-            ? invocations[0]!
-            : invocations.includes("unknown")
-              ? "partial"
-              : "mixed",
+          invocations.length === 0
+            ? "not-installed"
+            : invocations.length === 1
+              ? invocations[0]!
+              : invocations.includes("unknown")
+                ? "partial"
+                : "mixed",
         usedBy: [
           ...new Set(
             occurrences.flatMap(
@@ -172,6 +176,7 @@ export function invocationLabel(value: string): string {
         mixed: "Mixed",
         partial: "Unknown",
         unknown: "Unknown",
+        "not-installed": "—",
       } as Record<string, string>
     )[value] ?? "Unknown"
   );

@@ -28,6 +28,7 @@ export const inventoryFixture = (): MachineInventory => ({
         { base: "home", path: ".claude/skills/code-review" },
       ],
       metadata: {
+        readerVersion: 2,
         source: "skill-declaration",
         invocation: "both",
         variants: [{ agent: "codex", invocation: "both", status: "read" }],
