@@ -14,11 +14,11 @@ const skillInvocationSchema = z.enum([
   "unknown",
 ]);
 export type SkillInvocation = z.infer<typeof skillInvocationSchema>;
-export const skillMetadataReaderVersion = 2;
+export const skillMetadataReaderVersion = 3;
 /** Published declaration facts only; never includes local paths or skill instructions. */
 export const skillMetadataSchema = z.object({
   source: z.literal("skill-declaration"),
-  readerVersion: z.literal(skillMetadataReaderVersion).optional(),
+  readerVersion: z.number().int().positive().optional(),
   invocation: skillInvocationSchema,
   variants: z
     .array(
@@ -175,7 +175,10 @@ export function createSkillMetadataReader(env: NodeJS.ProcessEnv) {
       ),
     ].sort();
     if (
-      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(skill.name) ||
+      !skill.name.trim() ||
+      skill.name.length > 256 ||
+      [".", ".."].includes(skill.name) ||
+      /[/\\\p{Cc}]/u.test(skill.name) ||
       agents.length > 128 ||
       agents.some((agent) => !agent || agent.length > 128)
     )
@@ -194,9 +197,13 @@ export function createSkillMetadataReader(env: NodeJS.ProcessEnv) {
         skill.scope === "project" ? cwd : env.HOME || env.USERPROFILE;
       const directories: string[] = [];
       if (skill.path) directories.push(resolve(cwd, skill.path));
-      // Qualified command names need an observed path. Never infer a directory
-      // from a namespace or turn a colon into a Windows drive/stream reference.
-      if (base && !skill.name.includes(":") && agent !== "openclaw") {
+      // Display/qualified names need an observed path. Only plain path-component
+      // names can establish a fallback directory on every supported OS.
+      if (
+        base &&
+        /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(skill.name) &&
+        agent !== "openclaw"
+      ) {
         if (agent === "claude-code")
           directories.push(
             join(

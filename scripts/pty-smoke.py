@@ -231,10 +231,10 @@ def fixture(home):
         value = dict(name=name, source="acme/skills", agents=["codex"], scope="global", installed=True,
                      desired=False, managed=False, ownership="personal", reasons=[],
                      installationDirectories=[dict(base="home", path=f".agents/skills/{name}")],
-                     metadata=dict(readerVersion=2, source="skill-declaration", invocation="unknown", variants=[]))
+                     metadata=dict(readerVersion=3, source="skill-declaration", invocation="unknown", variants=[]))
         value.update(extra)
         return value
-    skills = [skill("alpha-review", usagePathIds=["a" * 64], managed=True, desired=True, metadata=dict(readerVersion=2, source="skill-declaration", invocation="both", variants=[dict(agent="codex", invocation="both", status="read")])), skill("bravo-writing"), skill("charlie-testing", source=None)]
+    skills = [skill("alpha-review", usagePathIds=["a" * 64], managed=True, desired=True, metadata=dict(readerVersion=3, source="skill-declaration", invocation="both", variants=[dict(agent="codex", invocation="both", status="read")])), skill("bravo-writing"), skill("charlie-testing", source=None)]
     skills += [skill(f"skill-{i:02}") for i in range(30)]
     tracked = skill("delta-project", scope="project", ownership="repository", source="acme/project")
     project = dict(id="github.com/acme/project", name="project", remote="https://github.com/acme/project",
