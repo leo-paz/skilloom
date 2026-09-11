@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createSkillMetadataReader,
+  needsSkillMetadataRefresh,
   skillMetadataSchema,
 } from "../src/core/skill-metadata.js";
 
@@ -29,6 +30,43 @@ async function fixture(
   return { home, root, file, env, skill, read: createSkillMetadataReader(env) };
 }
 describe("bounded harness-specific declaration metadata", () => {
+  it("reads display names from observed paths without guessing installation names", async () => {
+    const f = await fixture("openclaw");
+    await writeFile(
+      f.file,
+      "---\nname: Agent Browser\ndescription: Browser automation\n---\n",
+    );
+    const result = await f.read(
+      { ...f.skill, name: "Agent Browser", path: f.root },
+      f.home,
+    );
+    expect(result.invocation).toBe("both");
+    expect(result.variants[0]?.status).toBe("read");
+    const guessed = join(f.home, ".agents", "skills", "Agent Browser");
+    await mkdir(guessed, { recursive: true });
+    await writeFile(
+      join(guessed, "SKILL.md"),
+      "---\nname: Agent Browser\ndescription: Browser automation\n---\n",
+    );
+    expect(
+      (
+        await f.read(
+          { ...f.skill, name: "Agent Browser", agents: ["codex"] },
+          f.home,
+        )
+      ).invocation,
+    ).toBe("unknown");
+  });
+  it("accepts first-canary metadata for migration and marks it stale", () => {
+    const old = skillMetadataSchema.parse({
+      source: "skill-declaration",
+      readerVersion: 2,
+      invocation: "unknown",
+      variants: [],
+    });
+    expect(needsSkillMetadataRefresh(old)).toBe(true);
+    expect(needsSkillMetadataRefresh({ ...old, readerVersion: 3 })).toBe(false);
+  });
   it("reads qualified declaration names from their observed installation path", async () => {
     const f = await fixture("codex");
     await writeFile(
@@ -48,14 +86,16 @@ describe("bounded harness-specific declaration metadata", () => {
       (await f.read({ ...f.skill, name: "n8n:review" }, f.home)).invocation,
     ).toBe("unknown");
   });
-  it("does not use traversal names even when an observed path is provided", async () => {
-    const f = await fixture("codex");
-    await writeFile(f.file, "---\nname: ../review\n---\n");
-    expect(
-      (await f.read({ ...f.skill, name: "../review", path: f.root }, f.home))
-        .invocation,
-    ).toBe("unknown");
-  });
+  it.each(["../review", "..", "review\\child", "Review\u001b"])(
+    "does not use unsafe name %s even when an observed path is provided",
+    async (name) => {
+      const f = await fixture("codex");
+      await writeFile(f.file, `---\nname: ${JSON.stringify(name)}\n---\n`);
+      expect(
+        (await f.read({ ...f.skill, name, path: f.root }, f.home)).invocation,
+      ).toBe("unknown");
+    },
+  );
   it("uses Windows home fallback and Pi's configured global directory", async () => {
     const f = await fixture("claude-code");
     expect(

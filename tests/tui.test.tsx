@@ -1,6 +1,7 @@
 import { render } from "ink-testing-library";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { skillMetadataReaderVersion } from "../src/core/skill-metadata.js";
 import { type DashboardBackend, SkilloomApp } from "../src/tui/app.js";
 import { buildLibrary, filterLibrary } from "../src/tui/catalog.js";
 import { diagnosticsFixture } from "./installation-checks-fixture.js";
@@ -52,7 +53,7 @@ describe("full-screen skill library", () => {
     const inventory = inventoryFixture();
     inventory.globalSkills[0]!.metadata = {
       source: "skill-declaration",
-      readerVersion: 2,
+      readerVersion: skillMetadataReaderVersion,
       invocation: "unknown",
       variants: [
         {
@@ -160,7 +161,7 @@ describe("full-screen skill library", () => {
     const enriched = inventoryFixture();
     enriched.projects[0]!.checkouts[0]!.skills![0]!.metadata = {
       source: "skill-declaration",
-      readerVersion: 2,
+      readerVersion: skillMetadataReaderVersion,
       invocation: "unknown",
       variants: [],
     };
