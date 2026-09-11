@@ -79,7 +79,18 @@ const storageSchema = z
 
 const userConfigSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
+    ownershipReleases: z
+      .array(
+        z
+          .object({
+            id: z.string().regex(/^[a-f0-9]{64}$/),
+            projectId: z.string().min(1),
+            name: identifier,
+          })
+          .strict(),
+      )
+      .optional(),
     storage: storageSchema.default({ mode: "local" }),
     profiles: z.record(identifier, profileSchema),
     machines: z.record(
@@ -107,7 +118,15 @@ const userConfigSchema = z
       )
       .default({}),
   })
-  .strict();
+  .strict()
+  .superRefine((config, context) => {
+    if (config.ownershipReleases?.length && config.version !== 2)
+      context.addIssue({
+        code: "custom",
+        message:
+          "ownership releases require configuration version 2; upgrade Skilloom on participating machines",
+      });
+  });
 
 const projectConfigSchema = z
   .object({

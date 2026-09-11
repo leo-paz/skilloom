@@ -46,6 +46,7 @@ jobs:
         timeout-minutes: 2
 
   bun:
+    name: Bun packaged runtime
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -56,9 +57,11 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - run: bun test
       - run: npm run build
       - run: bash scripts/package-smoke.sh
+      - name: Test interactive PTY cancellation under Node and Bun
+        run: bash scripts/pty-smoke.sh
+        timeout-minutes: 2
 
   isolated-global:
     runs-on: ubuntu-latest

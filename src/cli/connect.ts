@@ -36,10 +36,33 @@ function mergeConfiguration(shared: UserConfig, local: UserConfig): UserConfig {
       target[key] = value;
     }
   }
+  const releases = new Map(
+    (shared.ownershipReleases ?? []).map((release) => [release.id, release]),
+  );
+  for (const release of local.ownershipReleases ?? []) {
+    const existing = releases.get(release.id);
+    if (existing && !isDeepStrictEqual(existing, release))
+      throw new Error(
+        `cannot connect: conflicting ownership release ${release.id}`,
+      );
+    releases.set(release.id, release);
+  }
+  if (shared.version === 2 || local.version === 2) merged.version = 2;
+  if (releases.size) merged.ownershipReleases = [...releases.values()];
   return merged;
 }
 
 function requirePortable(config: UserConfig): void {
+  for (const release of config.ownershipReleases ?? []) {
+    if (
+      isLocalSkillSource(release.projectId) ||
+      release.projectId.startsWith("local:")
+    )
+      throw new Error(
+        "cannot connect: ownership releases contain local-only project identities",
+      );
+  }
+
   for (const [section, entries] of Object.entries({
     profiles: config.profiles,
     projectProfiles: config.projectProfiles,

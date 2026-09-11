@@ -1,6 +1,10 @@
 import { type ProcessRunner, runProcess } from "../adapters/skills.js";
 
+import type { InventoryProgress } from "../core/types.js";
+
 export interface CliRuntime {
+  signal?: AbortSignal | undefined;
+  onProgress?: ((event: InventoryProgress) => void) | undefined;
   cwd: string;
   env: NodeJS.ProcessEnv;
   isTTY: boolean;
@@ -14,6 +18,11 @@ export interface CliRuntime {
 
 export function defaultRuntime(): CliRuntime {
   return {
+    onProgress: (event) => {
+      process.stderr.write(
+        `[${event.phase}] ${event.completed}/${event.total}${event.path ? ` ${event.path}` : ""}\n`,
+      );
+    },
     cwd: process.cwd(),
     env: process.env,
     isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),

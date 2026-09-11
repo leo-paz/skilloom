@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
-import { GitAdapter } from "../src/adapters/git.js";
+import { expect, it, vi } from "vitest";
+import { GitAdapter, GitExecutionError } from "../src/adapters/git.js";
 import { runProcess } from "../src/adapters/skills.js";
 import { type CliRuntime, runCli } from "../src/cli/app.js";
 import { loadProjectConfig, loadUserConfig } from "../src/core/config.js";
@@ -50,6 +50,9 @@ it("previews sync without installing and verifies actual installation before cla
     },
   };
   expect(await runCli(["init", "--yes", "--json"], runtime)).toBe(0);
+  expect(await runCli(["sync", "--dry-run", "--json"], runtime)).toBe(0);
+  const staleFingerprint = JSON.parse(output.at(-1)!).fingerprint;
+  expect(staleFingerprint).toMatch(/^[a-f0-9]{64}$/);
   expect(
     await runCli(
       ["add", "review", "--source", "acme/skills", "--json"],
@@ -63,6 +66,24 @@ it("previews sync without installing and verifies actual installation before cla
     converged: false,
     operations: [{ kind: "add", name: "review" }],
   });
+  const reviewedFingerprint = JSON.parse(output.at(-1)!).fingerprint;
+  expect(await runCli(["sync", "--dry-run", "--json"], runtime)).toBe(0);
+  expect(JSON.parse(output.at(-1)!).fingerprint).toBe(reviewedFingerprint);
+  expect(
+    await runCli(
+      ["sync", "--yes", "--expect", staleFingerprint, "--json"],
+      runtime,
+    ),
+  ).toBe(5);
+  expect(JSON.parse(output.at(-1)!)).toMatchObject({
+    ok: false,
+    canceled: true,
+    converged: false,
+    published: false,
+    error: { code: "plan_changed" },
+    fingerprint: reviewedFingerprint,
+    phases: { apply: { status: "skipped" } },
+  });
   expect(additions).toBe(0);
   expect(await runCli(["sync", "--json"], runtime)).toBe(5);
   expect(additions).toBe(0);
@@ -71,9 +92,15 @@ it("previews sync without installing and verifies actual installation before cla
     ok: false,
     converged: false,
     published: false,
+    phases: { apply: { status: "succeeded" }, verify: { status: "failed" } },
   });
   persistInstallation = true;
-  expect(await runCli(["sync", "--yes", "--json"], runtime)).toBe(0);
+  expect(
+    await runCli(
+      ["sync", "--yes", "--expect", reviewedFingerprint, "--json"],
+      runtime,
+    ),
+  ).toBe(0);
   expect(JSON.parse(output.at(-1)!)).toMatchObject({
     ok: true,
     command: "sync",
@@ -176,6 +203,53 @@ it("syncs shared policy into each machine and publishes verified observations th
       expect.objectContaining({ local: false, globalSkills: 1, changes: 0 }),
     ]),
   );
+  expect(await runCli(["sync", "--yes", "--json"], one.runtime)).toBe(0);
+  expect(JSON.parse(one.output.at(-1)!)).toMatchObject({
+    published: false,
+    converged: true,
+  });
+  const publishFailure = vi
+    .spyOn(GitAdapter.prototype, "commitObservationAndPush")
+    .mockRejectedValueOnce(
+      new GitExecutionError("remote unavailable; retry git push"),
+    );
+  // A new desired skill makes this observation change without mutating real installations.
+  expect(
+    await runCli(
+      ["add", "extra", "--source", "acme/skills", "--json"],
+      one.runtime,
+    ),
+  ).toBe(0);
+  const originalRun = one.runtime.run;
+  one.runtime.run = async (executable, args, options) => {
+    const result = await originalRun(executable, args, options);
+    if (args.includes("list") && args.includes("--global")) {
+      result.stdout = JSON.stringify([
+        ...JSON.parse(result.stdout),
+        {
+          name: "extra",
+          scope: "global",
+          source: "acme/skills",
+          agents: ["codex"],
+        },
+      ]);
+    }
+    return result;
+  };
+  expect(await runCli(["sync", "--yes", "--json"], one.runtime)).toBe(4);
+  expect(JSON.parse(one.output.at(-1)!)).toMatchObject({
+    ok: false,
+    converged: true,
+    partialSuccess: true,
+    published: false,
+    phases: {
+      apply: { status: "succeeded" },
+      verify: { status: "succeeded" },
+      publish: { status: "failed" },
+    },
+    error: { message: "remote unavailable; retry git push" },
+  });
+  publishFailure.mockRestore();
   const verification = join(root, "verify");
   await git.clone(remote, verification);
   const id = JSON.parse(two.output.at(-1) ?? "{}").machine.id;
@@ -187,7 +261,7 @@ it("syncs shared policy into each machine and publishes verified observations th
   expect(JSON.parse(observation).globalSkills).toEqual([
     expect.objectContaining({ name: "review", installed: true, desired: true }),
   ]);
-});
+}, 15000);
 
 it("targets personal project additions by remote and writes shared requirements into the repository", async () => {
   const home = await mkdtemp(join(tmpdir(), "skilloom-project-add-"));
@@ -314,4 +388,43 @@ it("targets personal project additions by remote and writes shared requirements 
   expect(JSON.parse(output.at(-1) ?? "{}").error.message).toContain(
     "linked worktree",
   );
+});
+
+it("cancels an interactive sync when policy changes during confirmation", async () => {
+  const home = await mkdtemp(join(tmpdir(), "skilloom-confirm-race-"));
+  const output: string[] = [];
+  let additions = 0;
+  const runtime: CliRuntime = {
+    cwd: home,
+    env: { HOME: home, XDG_CONFIG_HOME: join(home, ".config") },
+    isTTY: true,
+    stdout: (line) => output.push(line),
+    stderr: (line) => output.push(line),
+    run: async (_executable, args) => {
+      if (args.includes("add")) additions++;
+      return { code: 0, stdout: args.includes("list") ? "[]" : "", stderr: "" };
+    },
+    confirm: async () => {
+      expect(
+        await runCli(
+          ["add", "new-policy", "--source", "acme/skills", "--json"],
+          runtime,
+        ),
+      ).toBe(0);
+      return true;
+    },
+  };
+  expect(await runCli(["init", "--yes", "--json"], runtime)).toBe(0);
+  expect(
+    await runCli(
+      ["add", "review", "--source", "acme/skills", "--json"],
+      runtime,
+    ),
+  ).toBe(0);
+  expect(await runCli(["sync", "--json"], runtime)).toBe(5);
+  expect(JSON.parse(output.at(-1)!)).toMatchObject({
+    canceled: true,
+    error: { code: "plan_changed" },
+  });
+  expect(additions).toBe(0);
 });

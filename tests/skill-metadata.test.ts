@@ -1,0 +1,271 @@
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import {
+  createSkillMetadataReader,
+  skillMetadataSchema,
+} from "../src/core/skill-metadata.js";
+
+async function fixture(
+  agent = "claude-code",
+  frontmatter = "description: Use for review",
+) {
+  const home = await mkdtemp(join(tmpdir(), "skilloom-metadata-"));
+  const root = join(
+    home,
+    agent === "claude-code" ? ".claude" : ".agents",
+    "skills",
+    "review",
+  );
+  await mkdir(root, { recursive: true });
+  const file = join(root, "SKILL.md");
+  await writeFile(
+    file,
+    `---\nname: review\n${frontmatter}\n---\nAlways invoke automatically.\n`,
+  );
+  const env = { HOME: home, CODEX_HOME: join(home, ".codex") };
+  const skill = { name: "review", scope: "global" as const, agents: [agent] };
+  return { home, root, file, env, skill, read: createSkillMetadataReader(env) };
+}
+describe("bounded harness-specific declaration metadata", () => {
+  it("reads qualified declaration names from their observed installation path", async () => {
+    const f = await fixture("codex");
+    await writeFile(
+      f.file,
+      "---\nname: n8n:review\ndescription: Review\n---\n",
+    );
+    const result = await f.read(
+      { ...f.skill, name: "n8n:review", path: f.root },
+      f.home,
+    );
+    expect(result.invocation).toBe("both");
+    expect(result.variants).toEqual([
+      { agent: "codex", invocation: "both", status: "read" },
+    ]);
+    // A qualified command name does not establish its on-disk directory name.
+    expect(
+      (await f.read({ ...f.skill, name: "n8n:review" }, f.home)).invocation,
+    ).toBe("unknown");
+  });
+  it("does not use traversal names even when an observed path is provided", async () => {
+    const f = await fixture("codex");
+    await writeFile(f.file, "---\nname: ../review\n---\n");
+    expect(
+      (await f.read({ ...f.skill, name: "../review", path: f.root }, f.home))
+        .invocation,
+    ).toBe("unknown");
+  });
+  it("uses Windows home fallback and Pi's configured global directory", async () => {
+    const f = await fixture("claude-code");
+    expect(
+      (await createSkillMetadataReader({ USERPROFILE: f.home })(f.skill, "/"))
+        .invocation,
+    ).toBe("both");
+    const piRoot = join(f.home, "custom-pi", "skills", "review");
+    await mkdir(piRoot, { recursive: true });
+    await writeFile(
+      join(piRoot, "SKILL.md"),
+      "---\nname: review\ndescription: Review\ndisable-model-invocation: true\n---\n",
+    );
+    const result = await createSkillMetadataReader({
+      USERPROFILE: f.home,
+      PI_CODING_AGENT_DIR: join(f.home, "custom-pi"),
+    })({ ...f.skill, agents: ["pi"] }, "/");
+    expect(result.invocation).toBe("manual");
+    const tildeResult = await createSkillMetadataReader({
+      USERPROFILE: f.home,
+      PI_CODING_AGENT_DIR: "~/custom-pi",
+    })({ ...f.skill, agents: ["pi"] }, "/");
+    expect(tildeResult.invocation).toBe("manual");
+  });
+  it.each([
+    ["", "both"],
+    ["disable-model-invocation: true", "manual"],
+    ["user-invocable: false", "automatic"],
+    ["disable-model-invocation: true\nuser-invocable: false", "disabled"],
+  ])("interprets Claude declaration %s", async (flags, invocation) => {
+    const f = await fixture("claude-code", flags);
+    expect((await f.read(f.skill, f.home)).invocation).toBe(invocation);
+  });
+  it("uses Codex policy rather than Claude-specific flags", async () => {
+    const f = await fixture("codex", "disable-model-invocation: true");
+    expect((await f.read(f.skill, f.home)).invocation).toBe("both");
+    await mkdir(join(f.root, "agents"));
+    await writeFile(
+      join(f.root, "agents", "openai.yaml"),
+      "policy:\n  allow_implicit_invocation: false\n",
+    );
+    expect(
+      (await createSkillMetadataReader(f.env)(f.skill, f.home)).invocation,
+    ).toBe("manual");
+  });
+  it.each([
+    ["", "both"],
+    ["disable-model-invocation: true", "manual"],
+    ["user-invocable: false", "automatic"],
+    ["disable-model-invocation: true\nuser-invocable: false", "disabled"],
+    ["disable-model-invocation: 'YES'\nuser-invocable: 1", "manual"],
+    ["disable-model-invocation: 'off'\nuser-invocable: 'no'", "automatic"],
+    [
+      "disable-model-invocation: unexpected\nuser-invocable: unexpected",
+      "both",
+    ],
+    ["disable-model-invocation: {toString: yes}", "both"],
+  ])(
+    "interprets OpenClaw declaration %s using its boolean defaults",
+    async (flags, invocation) => {
+      const f = await fixture("openclaw", `description: Review\n${flags}`);
+      const result = await f.read({ ...f.skill, path: f.root }, f.home);
+      expect(result.invocation).toBe(invocation);
+      expect(result.variants[0]?.status).toBe("read");
+    },
+  );
+  it.each([
+    ["", "unknown"],
+    ["description:", "unknown"],
+    ["description: '   '", "unknown"],
+    ["description: 123", "both"],
+    ["description: false", "both"],
+    ["description: null", "both"],
+  ])(
+    "requires OpenClaw's nonempty parsed description: %s",
+    async (fields, invocation) => {
+      const f = await fixture("openclaw", fields);
+      const result = await f.read({ ...f.skill, path: f.root }, f.home);
+      expect(result.invocation).toBe(invocation);
+      expect(result.variants[0]?.status).toBe(
+        invocation === "unknown" ? "invalid" : "read",
+      );
+    },
+  );
+  it("reports mixed known harness declarations and publishes no local path or prose", async () => {
+    const f = await fixture(
+      "claude-code",
+      "disable-model-invocation: true\ndescription: PRIVATE_LOCAL_DESCRIPTION",
+    );
+    const codex = join(f.home, ".agents", "skills", "review");
+    await mkdir(codex, { recursive: true });
+    await symlink(f.file, join(codex, "SKILL.md"));
+    const result = await f.read(
+      { ...f.skill, agents: ["claude-code", "codex"] },
+      f.home,
+    );
+    expect(result.invocation).toBe("mixed");
+    expect(result.variants).toHaveLength(2);
+    expect(JSON.stringify(result)).not.toContain(f.home);
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_LOCAL_DESCRIPTION");
+  });
+  it("returns unknown for missing, invalid or unsupported declarations", async () => {
+    const f = await fixture("claude-code", "disable-model-invocation: 'true'");
+    expect((await f.read(f.skill, f.home)).invocation).toBe("unknown");
+    expect(
+      (await f.read({ ...f.skill, name: "missing" }, f.home)).invocation,
+    ).toBe("unknown");
+    expect(
+      (await f.read({ ...f.skill, agents: ["unverified-harness"] }, f.home))
+        .invocation,
+    ).toBe("unknown");
+  });
+  it("bounds malformed files and does not treat instruction prose as declarations", async () => {
+    const f = await fixture();
+    await writeFile(f.file, "---\n" + "x".repeat(70_000));
+    expect((await f.read(f.skill, f.home)).invocation).toBe("unknown");
+    await writeFile(
+      f.file,
+      "description: prose only\ndisable-model-invocation: true\n",
+    );
+    expect(
+      (await createSkillMetadataReader(f.env)(f.skill, f.home)).invocation,
+    ).toBe("unknown");
+  });
+  it("rejects a truncated multibyte Codex sidecar rather than assuming its omitted policy defaults", async () => {
+    const f = await fixture("codex");
+    await mkdir(join(f.root, "agents"));
+    await writeFile(
+      join(f.root, "agents", "openai.yaml"),
+      "interface: {display_name: Review}\n# " +
+        "é".repeat(40_000) +
+        "\npolicy: {allow_implicit_invocation: false}\n",
+    );
+    expect((await f.read(f.skill, f.home)).invocation).toBe("unknown");
+  });
+  it("caches one scan and refreshes declarations with a new reader", async () => {
+    const f = await fixture();
+    expect((await f.read(f.skill, f.home)).invocation).toBe("both");
+    await writeFile(
+      f.file,
+      "---\nname: review\ndisable-model-invocation: true\n---\n",
+    );
+    expect((await f.read(f.skill, f.home)).invocation).toBe("both");
+    expect(
+      (await createSkillMetadataReader(f.env)(f.skill, f.home)).invocation,
+    ).toBe("manual");
+  });
+  it("detects conflicting same-harness fallback variants", async () => {
+    const f = await fixture("codex");
+    const legacy = join(f.home, ".codex", "skills", "review");
+    await mkdir(join(legacy, "agents"), { recursive: true });
+    await writeFile(join(legacy, "SKILL.md"), "---\nname: review\n---\n");
+    await writeFile(
+      join(legacy, "agents", "openai.yaml"),
+      "policy: {allow_implicit_invocation: false}\n",
+    );
+    expect((await f.read(f.skill, f.home)).invocation).toBe("mixed");
+  });
+  it("honors Pi disable-model-invocation without inventing user-invocable support", async () => {
+    const f = await fixture(
+      "pi",
+      "description: Pi review\nuser-invocable: false",
+    );
+    expect((await f.read(f.skill, f.home)).invocation).toBe("both");
+    await writeFile(
+      f.file,
+      "---\nname: review\ndescription: Pi review\ndisable-model-invocation: true\n---\n",
+    );
+    expect(
+      (await createSkillMetadataReader(f.env)(f.skill, f.home)).invocation,
+    ).toBe("manual");
+  });
+  it("parses published metadata without accepting embedded local evidence fields", async () => {
+    const f = await fixture();
+    const result = await f.read(f.skill, f.home);
+    expect(
+      skillMetadataSchema.parse({
+        ...result,
+        path: f.file,
+        description: "private",
+      }),
+    ).toEqual(result);
+    expect(
+      skillMetadataSchema.safeParse({ ...result, invocation: "maybe" }).success,
+    ).toBe(false);
+  });
+  it("summarizes discovered supported declarations without assuming other harness support", async () => {
+    const f = await fixture();
+    const result = await f.read(
+      { ...f.skill, agents: ["claude-code", "codex", "unverified-harness"] },
+      f.home,
+    );
+    expect(result.invocation).toBe("both");
+    expect(
+      result.variants.find((variant) => variant.agent === "unverified-harness")
+        ?.invocation,
+    ).toBe("unknown");
+    expect(
+      result.variants.find((variant) => variant.agent === "codex")?.status,
+    ).toBe("missing");
+  });
+  it("uses actual detected agents rather than expanded installation coverage", async () => {
+    const f = await fixture();
+    const result = await f.read(
+      {
+        ...f.skill,
+        agents: ["claude-code", "unverified-harness"],
+        detectedAgents: ["claude-code"],
+      },
+      f.home,
+    );
+    expect(result.invocation).toBe("both");
+  });
+});

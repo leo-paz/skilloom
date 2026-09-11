@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
@@ -16,15 +17,56 @@ import type { CliRuntime } from "./runtime.js";
 function comparable(inventory: MachineInventory): string {
   return JSON.stringify({
     ...inventory,
+    ...(inventory.skillUsage
+      ? {
+          skillUsage: {
+            version: inventory.skillUsage.version,
+            usage: inventory.skillUsage.usage,
+            history: inventory.skillUsage.history,
+            historyTruncated: inventory.skillUsage.historyTruncated,
+            sessions: inventory.skillUsage.sessions,
+            sessionsTruncated: inventory.skillUsage.sessionsTruncated,
+            harnessCoverage: inventory.skillUsage.harnessCoverage,
+            backfill: inventory.skillUsage.backfill,
+            coverage: inventory.skillUsage.coverage.status,
+          },
+        }
+      : {}),
     observedAt: "",
-    machines: inventory.machines.map((machine) => ({
-      ...machine,
-      observedAt: machine.local ? "" : machine.observedAt,
-    })),
+    machines: inventory.machines
+      .filter((machine) => machine.local)
+      .map((machine) => ({ ...machine, observedAt: "" })),
   });
 }
 
-function publishedObservation(
+function comparablePublished(content: string): string {
+  try {
+    const parsed = JSON.parse(content);
+    return JSON.stringify({
+      ...parsed,
+      ...(parsed.skillUsage
+        ? {
+            skillUsage: {
+              version: parsed.skillUsage.version,
+              usage: parsed.skillUsage.usage,
+              history: parsed.skillUsage.history,
+              historyTruncated: parsed.skillUsage.historyTruncated,
+              sessions: parsed.skillUsage.sessions,
+              sessionsTruncated: parsed.skillUsage.sessionsTruncated,
+              harnessCoverage: parsed.skillUsage.harnessCoverage,
+              backfill: parsed.skillUsage.backfill,
+              coverage: parsed.skillUsage.coverage.status,
+            },
+          }
+        : {}),
+      observedAt: "",
+    });
+  } catch {
+    return content;
+  }
+}
+
+export function publishedObservation(
   inventory: MachineInventory,
 ): Record<string, unknown> {
   const publicSource = (source: string | null): string | null =>
@@ -63,12 +105,28 @@ function publishedObservation(
       checkoutsFound: inventory.discovery.checkoutsFound,
     },
     profiles: inventory.profiles,
+    ...(inventory.skillUsage ? { skillUsage: inventory.skillUsage } : {}),
     globalSkills: inventory.globalSkills.map(publicSkill),
     projects: inventory.projects.map((project) => ({
       id: project.id,
       name: project.name,
       remote: publicSource(project.remote),
       checkoutCount: project.checkouts.length,
+      ...(project.checkouts.every((checkout) => checkout.skills !== undefined)
+        ? {
+            checkouts: project.checkouts.map((checkout) => ({
+              id: createHash("sha256")
+                .update(
+                  `${inventory.machine.id}\0${project.id}\0${checkout.path}`,
+                )
+                .digest("hex")
+                .slice(0, 20),
+              skills: checkout.skills!.map(publicSkill),
+              ...(checkout.branch ? { branch: checkout.branch } : {}),
+              ...(checkout.commit ? { commit: checkout.commit } : {}),
+            })),
+          }
+        : {}),
       skills: project.skills.map(publicSkill),
       operations: project.operations.map(publicOperation),
     })),
@@ -91,8 +149,9 @@ export async function observeMachine(
     currentInventory ?? (await loadCurrentInventory(runtime, explicitConfig));
   const previous = await loadInventorySnapshot(paths.inventoryPath);
   const changed = !previous || comparable(previous) !== comparable(current);
-  if (changed) await saveInventorySnapshot(paths.inventoryPath, current);
-  else if (previous) current.observedAt = previous.observedAt;
+  if (!changed && previous) current.observedAt = previous.observedAt;
+  // Refresh remote metadata in the local cache without republishing local status.
+  await saveInventorySnapshot(paths.inventoryPath, current);
 
   let published = false;
   if (args.includes("--publish")) {
@@ -110,13 +169,16 @@ export async function observeMachine(
     const existing = existsSync(observationPath)
       ? await readFile(observationPath, "utf8")
       : undefined;
-    if (existing !== content) {
+    if (
+      !existing ||
+      comparablePublished(existing) !== comparablePublished(content)
+    ) {
       await mkdir(dirname(observationPath), { recursive: true });
       await writeFile(observationPath, content, { mode: 0o600 });
-      await new GitAdapter().commitAndPush(
+      await new GitAdapter().commitObservationAndPush(
         checkout,
         `Observe ${current.machine.name}`,
-        [relative(checkout, observationPath)],
+        relative(checkout, observationPath),
       );
       published = true;
     }

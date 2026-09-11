@@ -247,3 +247,119 @@ machines:
     });
   });
 });
+
+it("retries distinct observation publications without incorporating staged policy edits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "skilloom-publish-race-"));
+  const git = new GitAdapter();
+  const remote = join(root, "remote.git");
+  const one = join(root, "one");
+  const two = join(root, "two");
+  await git.initBare(remote);
+  await git.clone(remote, one);
+  await writeFile(join(one, "config.yaml"), "policy: initial\n");
+  await git.commitAndPush(one, "seed");
+  await git.clone(remote, two);
+  for (const checkout of [one, two])
+    await mkdir(join(checkout, "observations"));
+  await writeFile(join(one, "observations/one.json"), "{}\n");
+  await writeFile(join(two, "observations/two.json"), "{}\n");
+  await git.commitObservationAndPush(one, "one", "observations/one.json");
+  await git.commitObservationAndPush(two, "two", "observations/two.json");
+  expect(await readFile(join(two, "observations/one.json"), "utf8")).toBe(
+    "{}\n",
+  );
+  await writeFile(join(two, "config.yaml"), "policy: dirty\n");
+  execFileSync("git", ["add", "config.yaml"], { cwd: two });
+  await writeFile(join(two, "observations/two.json"), '{"updated":true}\n');
+  await expect(
+    git.commitObservationAndPush(two, "two", "observations/two.json"),
+  ).rejects.toThrow(/unrelated|uncommitted/);
+  expect(await readFile(join(two, "config.yaml"), "utf8")).toBe(
+    "policy: dirty\n",
+  );
+  expect(
+    execFileSync("git", ["diff", "--cached", "--name-only"], {
+      cwd: two,
+      encoding: "utf8",
+    }),
+  ).toBe("config.yaml\n");
+});
+
+it("preserves local policy commits when an observation push diverges", async () => {
+  const root = await mkdtemp(join(tmpdir(), "skilloom-policy-race-"));
+  const git = new GitAdapter();
+  const remote = join(root, "remote.git");
+  const one = join(root, "one");
+  const two = join(root, "two");
+  await git.initBare(remote);
+  await git.clone(remote, one);
+  await writeFile(join(one, "config.yaml"), "policy: initial\n");
+  await git.commitAndPush(one, "seed");
+  await git.clone(remote, two);
+  await writeFile(join(one, "config.yaml"), "policy: remote\n");
+  await git.commitAndPush(one, "remote policy");
+  await writeFile(join(two, "config.yaml"), "policy: local\n");
+  await expect(git.commitAndPush(two, "local policy")).rejects.toThrow();
+  const policyCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: two,
+    encoding: "utf8",
+  }).trim();
+  await mkdir(join(two, "observations"));
+  await writeFile(join(two, "observations/two.json"), "{}\n");
+  await expect(
+    git.commitObservationAndPush(two, "two", "observations/two.json"),
+  ).rejects.toThrow(/other local commits/);
+  expect(
+    execFileSync("git", ["rev-parse", "HEAD^"], {
+      cwd: two,
+      encoding: "utf8",
+    }).trim(),
+  ).toBe(policyCommit);
+  expect(await readFile(join(two, "config.yaml"), "utf8")).toBe(
+    "policy: local\n",
+  );
+  expect(await git.status(two)).toBe("");
+});
+
+it("aborts an observation rebase conflict and preserves both versions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "skilloom-observation-conflict-"));
+  const git = new GitAdapter();
+  const remote = join(root, "remote.git");
+  const one = join(root, "one");
+  const two = join(root, "two");
+  await git.initBare(remote);
+  await git.clone(remote, one);
+  await writeFile(join(one, "config.yaml"), "policy: initial\n");
+  await git.commitAndPush(one, "seed");
+  await mkdir(join(one, "observations"));
+  await writeFile(join(one, "observations/shared.json"), '{"value":0}\n');
+  await git.commitObservationAndPush(
+    one,
+    "initial observation",
+    "observations/shared.json",
+  );
+  await git.clone(remote, two);
+  await writeFile(join(one, "observations/shared.json"), '{"value":1}\n');
+  await writeFile(join(two, "observations/shared.json"), '{"value":2}\n');
+  await git.commitObservationAndPush(
+    one,
+    "remote observation",
+    "observations/shared.json",
+  );
+  await expect(
+    git.commitObservationAndPush(
+      two,
+      "local observation",
+      "observations/shared.json",
+    ),
+  ).rejects.toThrow(/conflicts with remote/);
+  expect(await readFile(join(two, "observations/shared.json"), "utf8")).toBe(
+    '{"value":2}\n',
+  );
+  expect(await git.status(two)).toBe("");
+  const verify = join(root, "verify");
+  await git.clone(remote, verify);
+  expect(await readFile(join(verify, "observations/shared.json"), "utf8")).toBe(
+    '{"value":1}\n',
+  );
+});

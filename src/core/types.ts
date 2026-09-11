@@ -1,3 +1,6 @@
+import type { InstallationDirectory } from "./installation-directories.js";
+import type { SkillMetadata } from "./skill-metadata.js";
+import type { SkillUsageScan } from "./skill-usage.js";
 export type Scope = "global" | "project";
 
 export interface SkillRequirement {
@@ -12,6 +15,8 @@ export interface DesiredSkill extends SkillRequirement {
 }
 
 export interface InstalledSkill {
+  metadata?: SkillMetadata | undefined;
+  detectedAgents?: string[] | undefined;
   missing?: boolean | undefined;
   path?: string | undefined;
   repositoryOwned?: boolean | undefined;
@@ -32,8 +37,20 @@ export interface Profile {
   skills: SkillRequirement[];
 }
 
+export interface OwnershipRelease {
+  id: string;
+  projectId: string;
+  name: string;
+}
+
+export interface OwnershipReleaseDelta {
+  releasedKeys: string[];
+  acknowledgedKeys: string[];
+}
+
 export interface UserConfig {
-  version: 1;
+  version: 1 | 2;
+  ownershipReleases?: OwnershipRelease[] | undefined;
   storage: {
     mode: "local" | "external" | "managed";
     path?: string | undefined;
@@ -60,8 +77,13 @@ export interface LocalMachine {
 }
 
 export interface InventorySkill {
+  installationDirectories?: InstallationDirectory[] | undefined;
+  path?: string | undefined;
+  usagePathIds?: string[] | undefined;
+  metadata?: SkillMetadata | undefined;
+  detectedAgents?: string[] | undefined;
   ownership?: "repository" | "personal" | undefined;
-  desiredSource?: string | undefined;
+  desiredSource?: string | null | undefined;
   desiredAgents?: string[] | undefined;
   conflict?: string | undefined;
   name: string;
@@ -91,12 +113,37 @@ export interface ProjectInventory {
   operations: PlanOperation[];
 }
 
+export interface InventoryProgress {
+  phase: string;
+  path?: string | undefined;
+  completed: number;
+  total: number;
+}
+
 export interface MachineInventory {
+  skillUsage?: SkillUsageScan | undefined;
+  ownershipRelease?: OwnershipReleaseDelta | undefined;
+  cached?: boolean | undefined;
   remoteObservations?:
     | Array<{
         machine: { id: string; name: string };
         observedAt: string;
-        projects: Array<{ id: string; name: string; skills: InventorySkill[] }>;
+        stale?: boolean | undefined;
+        skillUsage?: SkillUsageScan | undefined;
+        globalSkills?: InventorySkill[] | undefined;
+        projects: Array<{
+          id: string;
+          name: string;
+          skills: InventorySkill[];
+          checkouts?:
+            | Array<{
+                id: string;
+                skills: InventorySkill[];
+                branch?: string | undefined;
+                commit?: string | undefined;
+              }>
+            | undefined;
+        }>;
       }>
     | undefined;
   version: 1;

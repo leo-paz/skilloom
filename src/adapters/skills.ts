@@ -1,6 +1,13 @@
 import { spawn } from "node:child_process";
+import { realpath, stat } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
+import packageMetadata from "../../package.json" with { type: "json" };
+import { applyProvenance } from "../core/provenance.js";
 import type { InstalledSkill, PlanOperation, Scope } from "../core/types.js";
+import { abortProcessGroup } from "./process.js";
 
 const upstreamSkill = z
   .object({
@@ -43,6 +50,79 @@ export function parseSkillsList(text: string): InstalledSkill[] {
   }));
 }
 
+// skills@1.5.25 getAgentBaseDir uses the canonical directory in both scopes
+// for agents whose metadata declares skillsDir: ".agents/skills".
+export const universalInstallationAgents = [
+  "amp",
+  "antigravity",
+  "antigravity-cli",
+  "cline",
+  "codex",
+  "cursor",
+  "deepagents",
+  "dexto",
+  "droid",
+  "firebender",
+  "gemini-cli",
+  "github-copilot",
+  "kilo",
+  "kimi-code-cli",
+  "loaf",
+  "opencode",
+  "replit",
+  "sarvam-code",
+  "warp",
+  "zed",
+  "promptscript",
+  "universal",
+];
+
+export async function normalizeInstallationCoverage(
+  skills: InstalledSkill[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<InstalledSkill[]> {
+  return Promise.all(
+    skills.map(async (skill) => {
+      if (!skill.path) return skill;
+      const canonical = join(
+        skill.scope === "global" ? env.HOME || homedir() : cwd,
+        ".agents",
+        "skills",
+      );
+      try {
+        if (
+          (await realpath(dirname(resolve(cwd, skill.path)))) !==
+          (await realpath(canonical))
+        )
+          return skill;
+        if (!(await stat(join(resolve(cwd, skill.path), "SKILL.md"))).isFile())
+          return skill;
+      } catch {
+        return skill;
+      }
+      return {
+        ...skill,
+        detectedAgents: [...skill.agents],
+        agents: [
+          ...new Set([...skill.agents, ...universalInstallationAgents]),
+        ].sort(),
+      };
+    }),
+  );
+}
+
+const require = createRequire(import.meta.url);
+let upstreamExecutable: string | undefined;
+function packagedSkillsExecutable(): string {
+  upstreamExecutable ??= join(
+    dirname(require.resolve("skills/package.json")),
+    "bin",
+    "cli.mjs",
+  );
+  return upstreamExecutable;
+}
+
 export function commandForOperation(operation: PlanOperation): string[] {
   const { skill } = operation;
   const scope = skill.scope === "global" ? ["--global"] : [];
@@ -62,6 +142,17 @@ export function commandForOperation(operation: PlanOperation): string[] {
     ];
   }
   return ["skills", "remove", skill.name, ...agents, ...scope, "--yes"];
+}
+
+/** Portable reproduction command matching the bundled dependency version. */
+export function portableCommandForOperation(
+  operation: PlanOperation,
+): string[] {
+  return [
+    "--yes",
+    `skills@${packageMetadata.dependencies.skills}`,
+    ...commandForOperation(operation).slice(1),
+  ];
 }
 
 export interface ProcessResult {
@@ -89,6 +180,7 @@ export function redactProcessOutput(
 }
 
 export interface ProcessOptions {
+  signal?: AbortSignal | undefined;
   cwd: string;
   env: NodeJS.ProcessEnv;
   onStdout?: (chunk: string) => void;
@@ -107,8 +199,11 @@ export const runProcess: ProcessRunner = async (executable, args, options) =>
       cwd: options.cwd,
       env: options.env,
       shell: false,
+      signal: options.signal,
+      detached: Boolean(options.signal) && process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const stopped = abortProcessGroup(child, options.signal);
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -121,15 +216,39 @@ export const runProcess: ProcessRunner = async (executable, args, options) =>
       stderr += text;
       options.onStderr?.(text);
     });
-    child.once("error", reject);
-    child.once("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+    let failure: Error | undefined;
+    child.once("error", (error) => {
+      failure = error;
+    });
+    child.once("close", (code) => {
+      void stopped().then(() => {
+        if (failure) reject(failure);
+        else resolve({ code: code ?? 1, stdout, stderr });
+      });
+    });
   });
 
 export class SkillsAdapter {
   constructor(
     private readonly runner: ProcessRunner = runProcess,
     private readonly executable = "npx",
+    private readonly signal?: AbortSignal,
   ) {}
+
+  private invoke(
+    args: string[],
+    options: ProcessOptions,
+  ): Promise<ProcessResult> {
+    if (this.signal) options = { ...options, signal: this.signal };
+    // Injected runners and explicit executables retain the public test/embedding contract.
+    if (this.runner !== runProcess || this.executable !== "npx")
+      return this.runner(this.executable, args, options);
+    return this.runner(
+      process.execPath,
+      [packagedSkillsExecutable(), ...args.slice(1)],
+      options,
+    );
+  }
 
   async list(
     scope: Scope,
@@ -144,7 +263,7 @@ export class SkillsAdapter {
     ];
     let result: ProcessResult;
     try {
-      result = await this.runner(this.executable, args, { cwd, env });
+      result = await this.invoke(args, { cwd, env });
     } catch (error) {
       throw new SkillsExecutionError(
         `skills list failed to start: ${error instanceof Error ? error.message : String(error)}`,
@@ -155,7 +274,15 @@ export class SkillsAdapter {
       throw new SkillsExecutionError(
         `skills list failed with exit ${result.code}: ${redactProcessOutput(result.stderr, env).trim()}`,
       );
-    return parseSkillsList(result.stdout);
+    return applyProvenance(
+      await normalizeInstallationCoverage(
+        parseSkillsList(result.stdout),
+        cwd,
+        env,
+      ),
+      cwd,
+      env,
+    );
   }
 
   async execute(
@@ -165,15 +292,11 @@ export class SkillsAdapter {
     output: Pick<ProcessOptions, "onStdout" | "onStderr"> = {},
   ): Promise<ProcessResult> {
     try {
-      return await this.runner(
-        this.executable,
-        commandForOperation(operation),
-        {
-          cwd,
-          env,
-          ...output,
-        },
-      );
+      return await this.invoke(commandForOperation(operation), {
+        cwd,
+        env,
+        ...output,
+      });
     } catch (error) {
       throw new SkillsExecutionError(
         `skills ${operation.kind} failed to start: ${error instanceof Error ? error.message : String(error)}`,
@@ -189,8 +312,7 @@ export class SkillsAdapter {
     names: string[] = [],
   ): Promise<ProcessResult> {
     try {
-      return await this.runner(
-        this.executable,
+      return await this.invoke(
         [
           "skills",
           "update",

@@ -1,5 +1,5 @@
 import {
-  commandForOperation,
+  portableCommandForOperation,
   redactProcessOutput,
   SkillsAdapter,
 } from "../adapters/skills.js";
@@ -8,6 +8,7 @@ import {
   resolveConfigPaths,
   saveManagedState,
 } from "../core/config.js";
+import { applyOwnershipReleaseDelta } from "../core/ownership-release.js";
 import { managedStateKey } from "../core/plan.js";
 import type { MachineInventory, PlanOperation } from "../core/types.js";
 import { loadCurrentInventory } from "./inventory.js";
@@ -77,7 +78,7 @@ export function operationJson(
     ...(target.project ? { project: target.project } : {}),
     command: {
       executable: "npx",
-      arguments: commandForOperation(operation),
+      arguments: portableCommandForOperation(operation),
     },
   };
 }
@@ -151,7 +152,16 @@ export async function applyWorkspacePlan(
     );
     return 2;
   }
+  const persistReleases = async () => {
+    const paths = resolveConfigPaths(runtime.env, configPath);
+    const managed = await loadManagedState(paths.statePath);
+    applyOwnershipReleaseDelta(managed, inventory.ownershipRelease);
+    if (inventory.ownershipRelease?.acknowledgedKeys.length)
+      await saveManagedState(paths.statePath, managed);
+    return { paths, managed };
+  };
   if (operations.length === 0) {
+    await persistReleases();
     runtime.stdout(
       json
         ? JSON.stringify({
@@ -189,8 +199,7 @@ export async function applyWorkspacePlan(
   ) {
     return 5;
   }
-  const paths = resolveConfigPaths(runtime.env, configPath);
-  const managed = await loadManagedState(paths.statePath);
+  const { paths, managed } = await persistReleases();
   const adapter = new SkillsAdapter(runtime.run);
   const completed: TargetedOperation[] = [];
   for (let index = 0; index < operations.length; index += 1) {
@@ -211,7 +220,7 @@ export async function applyWorkspacePlan(
                 code: "execution_failed",
                 message:
                   redactProcessOutput(result.stderr, runtime.env).trim() ||
-                  `npx exited ${result.code}`,
+                  `skills exited ${result.code}`,
               },
               completed: completed.map(operationJson),
               pending: pending.map(operationJson),

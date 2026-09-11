@@ -6,12 +6,7 @@ import {
   SkillsAdapter,
   SkillsExecutionError,
 } from "../adapters/skills.js";
-import {
-  findProjectRoot,
-  loadInventorySnapshot,
-  loadUserConfig,
-  resolveConfigPaths,
-} from "../core/config.js";
+import { findProjectRoot } from "../core/config.js";
 import {
   configureProfiles,
   editProject,
@@ -19,13 +14,17 @@ import {
   initializeProject,
 } from "./configuration.js";
 import { connectConfiguration } from "./connect.js";
+import { doctor } from "./doctor.js";
 import { showInventory } from "./inventory.js";
+import { migrateConfiguration } from "./migrate.js";
 import { observeMachine } from "./observe.js";
 import { editPolicy } from "./policy.js";
 import { applyReconciliation, showReconciliation } from "./reconcile.js";
 import { type CliRuntime, defaultRuntime } from "./runtime.js";
 import { setupMachine } from "./setup.js";
+import { verifySource } from "./source.js";
 import { syncMachine } from "./sync.js";
+import { usageCommand } from "./usage.js";
 import {
   applyWorkspacePlan,
   showWorkspacePlan,
@@ -40,6 +39,10 @@ const help = `Skilloom ${version}
 Usage: skilloom <command> [options]
 
 Commands:
+  skilloom tui              Open the full-screen skill library
+  skilloom usage            Collect local skill history and configure usage hooks
+  skilloom migrate          Review and repair legacy adoption policy
+  skilloom source verify    Verify an installed skill's source without reinstalling
   skilloom setup [DIR]      Discover projects and adopt existing skills
   skilloom connect REPO     Connect existing configuration to shared Git storage
   skilloom sync             Reconcile this machine and publish its status
@@ -51,7 +54,7 @@ Commands:
   skilloom observe          Save or publish the current inventory
   skilloom init             Initialize user configuration
   skilloom plan             Show desired changes
-  skilloom apply            Apply desired changes through npx skills
+  skilloom apply            Apply desired changes through the pinned skills CLI
   skilloom status           Show convergence status
   skilloom update           Update managed skills
   skilloom project init     Create .skilloom.yaml
@@ -65,15 +68,36 @@ Common options:
   --config <path>           Use an explicit user configuration
   --yes                     Confirm a mutating command
   --help                    Show command help
-  --version                 Show the version`;
+  --version                 Show the version
+
+Exit codes: 0 success, 1 migration preview blocker, 2 drift or unresolved verification,
+            3 invalid/unavailable state, 4 execution/diagnostic failure, 5 cancellation or changed sync plan`;
 
 const commandHelp: Record<string, string> = {
+  doctor: `Usage: skilloom doctor [--installations] [--json] [--config PATH]
+
+Check runtime, dependencies and configuration. With --installations, inspect local installation entries without changing files, scanning logs, or contacting other machines. Exit 0 means the bounded scan completed within its stated scope, even with findings; exit 4 means inspection was incomplete.`,
+  usage: `Usage: skilloom usage status|install|uninstall|refresh|backfill [--once] [--restart] [--max-seconds 1..180]|publish [--dry-run]
+
+Install hooks locally, refresh recent evidence, or resume history backfill. Backfill checkpoints after two minutes by default; run it again to continue. Ctrl-C pauses safely. Preview sharing with usage publish --dry-run, then publish with usage publish.`,
+  tui: `Usage: skilloom [tui] [--config PATH]
+
+Open a full-screen skill library. Search with /, switch views with 1–3 or Tab, inspect with Enter, check local installations with l, refresh with r, and review sync with s. Press ? for all keys.`,
+  migrate: `Usage: skilloom migrate [--dry-run] [--yes] [--expect FINGERPRINT] [--json]
+
+Review obsolete adoption requirements and ownership records with --dry-run. Apply with --yes and optionally --expect using preview.fingerprint from the dry run. A changed fingerprint refuses application. Migration preserves installed files and backs up configuration and state.`,
+  source: `Usage: skilloom source verify NAME --source REPOSITORY [--scope global|project] [--checkout PATH] [--dry-run|--yes] [--json]
+
+Compare installed files with the source repository and save verified local provenance. Does not reinstall or adopt a skill.`,
+  config: `Usage: skilloom config [--add-profile NAME [--copy-profile BASE]] [--profile NAME] [--json]
+
+Create/copy profiles or change this machine's assignment. Review sync before applying installations.`,
   connect: `Usage: skilloom connect REPOSITORY [--json]
 
 Connect local configuration to a shared Git repository, preserving machine identity and a local backup. Conflicting configuration entries require resolution.`,
-  sync: `Usage: skilloom sync [--dry-run] [--yes] [--json]
+  sync: `Usage: skilloom sync [--dry-run] [--yes] [--expect FINGERPRINT] [--json]
 
-Pull shared policy, reconcile local installations, verify, and publish status. Linked worktrees and repository-owned skill files are excluded from mutation. Does not upgrade skill revisions or pull project repositories.`,
+Pull shared policy, reconcile local installations, verify, and publish status. Use --expect with the fingerprint from --dry-run --json to apply the reviewed plan; a changed plan returns exit 5. JSON separates apply, verify, and publish phases and reports partial success. Linked worktrees and repository-owned skill files are excluded from mutation. Does not upgrade skill revisions or pull project repositories.`,
   setup: `Usage: skilloom setup [WORKSPACE] [options]
 
 Discover Git projects, inspect existing installations through the skills CLI, and adopt eligible skills without reinstalling them.
@@ -82,14 +106,15 @@ Options:
   --depth <1-8>             Maximum project discovery depth, default 3
   --machine-name <name>     Human-readable name for this machine
   --profile <name>          Assign an existing global profile
+  --preserve-global-profile <name>  Adopt current globals into a new exclusive profile
   --storage <mode>          local, external, or managed
   --repository <url>        Managed Git configuration repository
   --sync <url>              Shorthand for managed Git storage
   --no-adopt                Keep existing installations unmanaged
   --json                    Emit the complete setup inventory`,
-  inventory: `Usage: skilloom inventory [--json]
+  inventory: `Usage: skilloom inventory [--cached] [--machine ID|NAME] [--scope global|project] [--source SOURCE|unknown] [--ownership repository|personal|unknown] [--query TEXT] [--json]
 
-Show configured machines and profiles plus this machine's discovered projects, installed skills, ownership, and drift.`,
+Inspect local and published remote occurrences. Cached mode never scans or contacts Git. Remote records always carry observation timestamps. Filters apply to records; the full inventory remains available for compatibility.`,
   add: `Usage: skilloom add NAME... --source SOURCE [options]
 
 Options:
@@ -123,6 +148,10 @@ export const commandContract = defineCommand({
   },
   subCommands: Object.fromEntries(
     [
+      "tui",
+      "usage",
+      "migrate",
+      "source",
       "init",
       "setup",
       "connect",
@@ -232,96 +261,6 @@ async function update(
   return 0;
 }
 
-async function doctor(
-  args: string[],
-  runtime: CliRuntime,
-  json: boolean,
-): Promise<number> {
-  const paths = resolveConfigPaths(runtime.env, option(args, "--config"));
-  const projectRoot = findProjectRoot(runtime.cwd);
-  const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
-  checks.push({
-    name: "runtime",
-    ok: true,
-    detail: `${process.release.name} ${process.version}`,
-  });
-  for (const [name, executable, commandArgs] of [
-    ["git", "git", ["--version"]],
-    ["npx", "npx", ["--version"]],
-    ["skills", "npx", ["skills", "--version"]],
-  ] as const) {
-    try {
-      const result = await runtime.run(executable, [...commandArgs], {
-        cwd: runtime.cwd,
-        env: runtime.env,
-      });
-      checks.push({
-        name,
-        ok: result.code === 0,
-        detail: (result.stdout || result.stderr).trim(),
-      });
-    } catch (error) {
-      checks.push({ name, ok: false, detail: String(error) });
-    }
-  }
-  checks.push({
-    name: "project",
-    ok: true,
-    detail: projectRoot || "No Git repository found",
-  });
-  if (projectRoot) {
-    try {
-      const result = await runtime.run("git", ["status", "--porcelain"], {
-        cwd: projectRoot,
-        env: runtime.env,
-      });
-      const changes = result.stdout.trim().split("\n").filter(Boolean).length;
-      checks.push({
-        name: "repository",
-        ok: result.code === 0,
-        detail:
-          result.code !== 0
-            ? result.stderr.trim() || `git status exited ${result.code}`
-            : changes === 0
-              ? "clean"
-              : `${changes} uncommitted change(s)`,
-      });
-    } catch (error) {
-      checks.push({
-        name: "repository",
-        ok: false,
-        detail: error instanceof Error ? error.message : String(error),
-      });
-    }
-  } else {
-    checks.push({ name: "repository", ok: true, detail: "not applicable" });
-  }
-  try {
-    await loadUserConfig(paths.configPath);
-    checks.push({ name: "config", ok: true, detail: paths.configPath });
-  } catch (error) {
-    checks.push({
-      name: "config",
-      ok: false,
-      detail: error instanceof Error ? error.message : String(error),
-    });
-  }
-  const ok = checks.every((check) => check.ok);
-  emit(
-    runtime,
-    json,
-    "doctor",
-    { checks },
-    checks
-      .map(
-        (check) =>
-          `${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}`,
-      )
-      .join("\n"),
-  );
-  return ok ? 0 : 4;
-}
-
 export async function runCli(
   rawArgs: string[],
   runtime: CliRuntime,
@@ -335,10 +274,7 @@ export async function runCli(
     if (rawArgs.length === 0) {
       if (runtime.isTTY) {
         const { runDashboard } = await import("../tui/dashboard.js");
-        return runDashboard(
-          () => showInventoryForDashboard(runtime),
-          (args) => runCli(args, runtime),
-        );
+        return runDashboard(runtime, runCli);
       }
       runtime.stdout(help);
       return 0;
@@ -348,6 +284,24 @@ export async function runCli(
       return 0;
     }
     const command = rawArgs[0];
+    if (command === "usage")
+      return await usageCommand(rawArgs.slice(1), runtime);
+    if (command === "tui") {
+      if (!runtime.isTTY)
+        throw new Error(
+          "The full-screen library requires a terminal. Use inventory --cached --json for an agent or pipe.",
+        );
+      const { runDashboard } = await import("../tui/dashboard.js");
+      return await runDashboard(
+        runtime,
+        runCli,
+        option(rawArgs.slice(1), "--config"),
+      );
+    }
+    if (command === "migrate")
+      return await migrateConfiguration(rawArgs.slice(1), runtime, json);
+    if (command === "source" && rawArgs[1] === "verify")
+      return await verifySource(rawArgs.slice(2), runtime, json);
     if (command === "connect")
       return await connectConfiguration(rawArgs.slice(1), runtime, json);
     if (command === "sync")
@@ -361,6 +315,7 @@ export async function runCli(
         runtime,
         json,
         option(rawArgs.slice(1), "--config"),
+        inventoryOptions(rawArgs.slice(1)),
       );
     if (
       command === "add" ||
@@ -436,13 +391,21 @@ export async function runCli(
   }
 }
 
-async function showInventoryForDashboard(
-  runtime: CliRuntime,
-): Promise<import("../core/types.js").MachineInventory> {
-  const { loadCurrentInventory } = await import("./inventory.js");
-  const paths = resolveConfigPaths(runtime.env);
-  return (
-    (await loadInventorySnapshot(paths.inventoryPath)) ??
-    loadCurrentInventory(runtime)
-  );
+function inventoryOptions(
+  args: string[],
+): import("./inventory.js").InventoryOptions {
+  const scope = option(args, "--scope");
+  const ownership = option(args, "--ownership");
+  if (scope && scope !== "global" && scope !== "project")
+    throw new Error("--scope must be global or project");
+  if (ownership && !["repository", "personal", "unknown"].includes(ownership))
+    throw new Error("--ownership must be repository, personal, or unknown");
+  return {
+    cached: flag(args, "--cached"),
+    machine: option(args, "--machine"),
+    scope: scope as "global" | "project" | undefined,
+    source: option(args, "--source"),
+    ownership: ownership as "repository" | "personal" | "unknown" | undefined,
+    query: option(args, "--query"),
+  };
 }

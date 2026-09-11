@@ -14,6 +14,7 @@ import {
   saveUserConfig,
 } from "../core/config.js";
 import { buildInventory } from "../core/inventory.js";
+import { applyOwnershipReleaseDelta } from "../core/ownership-release.js";
 import { managedStateKey } from "../core/plan.js";
 import { isLocalSkillSource } from "../core/schema.js";
 import type {
@@ -58,6 +59,7 @@ function initArgs(args: string[]): string[] {
     "--path",
     "--profile",
     "--config",
+    "--preserve-global-profile",
   ]) {
     const value = option(args, name);
     if (value) output.push(name, value);
@@ -124,6 +126,19 @@ export async function setupMachine(
   runtime: CliRuntime,
   json: boolean,
 ): Promise<number> {
+  const preservedProfile = option(args, "--preserve-global-profile");
+  if (
+    preservedProfile &&
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(preservedProfile)
+  )
+    throw new Error("profile name must be a plain identifier");
+  if (
+    preservedProfile &&
+    (option(args, "--profile") || args.includes("--no-adopt"))
+  )
+    throw new Error(
+      "--preserve-global-profile cannot be combined with --profile or --no-adopt",
+    );
   let paths = resolveConfigPaths(runtime.env, option(args, "--config"));
   const firstSetup = !existsSync(paths.configPath);
   if (firstSetup) {
@@ -152,8 +167,18 @@ export async function setupMachine(
       );
     }
   }
+  if (preservedProfile && !firstSetup) {
+    if (config.profiles[preservedProfile])
+      throw new Error(
+        `profile ${preservedProfile} already exists; choose a new machine profile name`,
+      );
+    config.profiles[preservedProfile] = { skills: [] };
+  }
   const selectedProfile =
-    option(args, "--profile") || config.machines[id]?.profile || "default";
+    preservedProfile ||
+    option(args, "--profile") ||
+    config.machines[id]?.profile ||
+    "default";
   if (!config.profiles[selectedProfile]) {
     throw new Error(`profile ${selectedProfile} does not exist`);
   }
@@ -196,6 +221,7 @@ export async function setupMachine(
   const skills = new SkillsAdapter(runtime.run);
   const observed = new Map<string, InstalledSkill[]>();
   const dependencies = {
+    onProgress: runtime.onProgress,
     listSkills: async (
       scope: "global" | "project",
       cwd: string,
@@ -222,6 +248,8 @@ export async function setupMachine(
     dependencies,
   );
 
+  applyOwnershipReleaseDelta(managed, inventory.ownershipRelease);
+
   let adopted = 0;
   let unmanaged = 0;
   const shouldAdopt = !args.includes("--no-adopt");
@@ -237,6 +265,10 @@ export async function setupMachine(
       (config.storage.mode === "managed" &&
         isLocalSkillSource(installed.source))
     ) {
+      // The new profile intentionally leaves unverifiable or nonportable installs
+      // unmanaged. Release old global ownership so sync cannot remove them.
+      if (preservedProfile && installed.scope === "global")
+        managed.delete(managedStateKey(installed));
       unmanaged += 1;
       return;
     }
@@ -324,7 +356,11 @@ export async function setupMachine(
       `Set up ${name}`,
     );
   }
-  const payload = { inventory, adoption: { adopted, unmanaged } };
+  const payload = {
+    inventory,
+    adoption: { adopted, unmanaged },
+    ...(preservedProfile ? { preservedGlobalProfile: preservedProfile } : {}),
+  };
   runtime.stdout(
     json
       ? JSON.stringify({ ok: true, command: "setup", ...payload })
