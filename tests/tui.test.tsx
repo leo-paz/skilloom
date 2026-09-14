@@ -33,6 +33,37 @@ const mount = (width = 120, api = backend()) => {
 };
 
 describe("full-screen skill library", () => {
+  it("groups sources, collapses headings, and opens only skill details", async () => {
+    const app = mount(120);
+    await tick();
+    expect(app.lastFrame()).toContain("Flat");
+    app.stdin.write("b");
+    await tick();
+    expect(app.lastFrame()).toContain("acme / review");
+    expect(app.lastFrame()).toContain("Source unknown");
+    app.stdin.write("\r");
+    await tick();
+    expect(app.lastFrame()).not.toContain("Skill details");
+    app.stdin.write("/");
+    await tick();
+    app.stdin.write("code-review");
+    await tick();
+    expect(app.lastFrame()).toContain("code-review");
+    expect(app.lastFrame()).toContain("acme / review");
+    app.stdin.write("\u001b");
+    await tick();
+    app.stdin.write("\u001b[B");
+    await tick();
+    app.stdin.write("i");
+    await tick();
+    expect(app.lastFrame()).toContain("Skill details");
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("acme / review");
+    app.stdin.write("b");
+    await tick();
+    expect(app.lastFrame()).toContain("Flat");
+  });
   it("keeps missing requirements from obscuring an installed copy's invocation", () => {
     const inventory = inventoryFixture();
     inventory.remoteObservations![0]!.globalSkills = [

@@ -155,6 +155,54 @@ export function filterLibrary(
     ),
   );
 }
+export interface LibrarySourceGroup {
+  key: string;
+  label: string;
+  entries: LibraryEntry[];
+}
+/** Group only recorded skill origins; a checkout repository is not provenance. */
+export function groupLibraryBySource(
+  entries: LibraryEntry[],
+): LibrarySourceGroup[] {
+  const sources = new Map<
+    string,
+    { label: string; records: InventoryOccurrence[] }
+  >();
+  for (const entry of entries)
+    for (const record of entry.occurrences) {
+      const source = record.source?.trim();
+      const github = source?.match(
+        /^(?:(?:https?:\/\/|ssh:\/\/git@)github\.com\/|git@github\.com:)?([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/,
+      );
+      const key = !source
+        ? "unknown"
+        : github
+          ? `github:${github[1]!.toLowerCase()}/${github[2]!.toLowerCase()}`
+          : `source:${source}`;
+      const label = !source
+        ? "Source unknown"
+        : github
+          ? `${github[1]} / ${github[2]}`
+          : source;
+      const current = sources.get(key) ?? { label, records: [] };
+      current.records.push(record);
+      sources.set(key, current);
+    }
+  return [...sources]
+    .map(([key, value]) => ({
+      key,
+      label: value.label,
+      entries: group(value.records, entries[0]?.usageMachines ?? []),
+    }))
+    .sort((a, b) =>
+      a.key === "unknown"
+        ? 1
+        : b.key === "unknown"
+          ? -1
+          : a.label.localeCompare(b.label),
+    );
+}
+
 export function safeText(value: unknown): string {
   return String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 }

@@ -8,9 +8,11 @@ import type { InventoryProgress, MachineInventory } from "../core/types.js";
 import {
   buildLibrary,
   filterLibrary,
+  groupLibraryBySource,
   harnessLabel,
   invocationLabel,
   type LibraryEntry,
+  type LibrarySourceGroup,
   librarySessions,
   observedLabel,
   ownershipLabel,
@@ -19,6 +21,39 @@ import {
 import { InstallationChecks } from "./installation-checks.js";
 import { SelectionMenu } from "./selection-menu.js";
 import { sessionUsageSummary } from "./session-summary.js";
+
+type BrowseRow =
+  | { kind: "skill"; key: string; entry: LibraryEntry }
+  | {
+      kind: "source";
+      key: string;
+      source: LibrarySourceGroup;
+      expanded: boolean;
+    };
+function libraryBrowseRows(
+  entries: LibraryEntry[],
+  groups: LibrarySourceGroup[] | undefined,
+  collapsed: Set<string>,
+  forceExpanded: boolean,
+): BrowseRow[] {
+  if (!groups)
+    return entries.map((entry) => ({ kind: "skill", key: entry.name, entry }));
+  return groups.flatMap((source): BrowseRow[] => {
+    const expanded = forceExpanded || !collapsed.has(source.key);
+    return [
+      { kind: "source", key: source.key, source, expanded },
+      ...(expanded
+        ? source.entries.map(
+            (entry): BrowseRow => ({
+              kind: "skill",
+              key: `${source.key}:${entry.name}`,
+              entry,
+            }),
+          )
+        : []),
+    ];
+  });
+}
 
 export interface CommandResult {
   code: number;
@@ -785,6 +820,10 @@ export function SkilloomApp({
   const [machine, setMachine] = useState("all");
   const [scope, setScope] = useState("all");
   const [ownership, setOwnership] = useState("all");
+  const [groupBySource, setGroupBySource] = useState(false);
+  const [collapsedSources, setCollapsedSources] = useState<Set<string>>(
+    new Set(),
+  );
   const [index, setIndex] = useState(0);
   const [details, setDetails] = useState(false);
   const [installationChecks, setInstallationChecks] = useState(false);
@@ -950,13 +989,34 @@ export function SkilloomApp({
   const evidenceMachines = (entries[0]?.usageMachines ?? []).filter(
     (item) => machine === "all" || item.id === machine,
   );
-  const selected = rows[Math.min(index, Math.max(0, rows.length - 1))];
+  const sourceGroups = useMemo(
+    () => (groupBySource ? groupLibraryBySource(rows) : undefined),
+    [rows, groupBySource],
+  );
+  const browseRows = useMemo(
+    () =>
+      libraryBrowseRows(
+        rows,
+        sourceGroups,
+        collapsedSources,
+        searching || !!query.trim(),
+      ),
+    [rows, sourceGroups, collapsedSources, searching, query],
+  );
+  const activeRow =
+    browseRows[Math.min(index, Math.max(0, browseRows.length - 1))];
+  const selected = activeRow?.kind === "skill" ? activeRow.entry : undefined;
+  const skillCount = groupBySource
+    ? sourceGroups!.reduce((count, source) => count + source.entries.length, 0)
+    : rows.length;
   useEffect(() => {
-    setIndex((current) => Math.min(current, Math.max(0, rows.length - 1)));
-  }, [rows.length]);
+    setIndex((current) =>
+      Math.min(current, Math.max(0, browseRows.length - 1)),
+    );
+  }, [browseRows.length]);
   useEffect(() => {
     setIndex(0);
-  }, [query, scope, ownership]);
+  }, [query, scope, ownership, groupBySource]);
   const changeMachine = (direction: number) => {
     if (!inventory) return;
     const machines = [
@@ -966,16 +1026,22 @@ export function SkilloomApp({
     const current = Math.max(0, machines.indexOf(machine));
     const next =
       machines[(current + direction + machines.length) % machines.length]!;
-    const nextRows = filterLibrary(entries, {
+    const nextEntries = filterLibrary(entries, {
       query,
       machine: next,
       scope,
       ownership,
     });
+    const nextRows = libraryBrowseRows(
+      nextEntries,
+      groupBySource ? groupLibraryBySource(nextEntries) : undefined,
+      collapsedSources,
+      searching || !!query.trim(),
+    );
     setIndex(
       Math.max(
         0,
-        nextRows.findIndex((row) => row.name === selected?.name),
+        nextRows.findIndex((row) => row.key === activeRow?.key),
       ),
     );
     setMachine(next);
@@ -1005,7 +1071,7 @@ export function SkilloomApp({
   const pageSize = Math.max(1, bodyHeight - 4);
   useEffect(() => {
     setDetailOffset(0);
-  }, [selected?.name]);
+  }, [activeRow?.key]);
   useEffect(() => {
     setChangeIndex((index) =>
       Math.min(index, inventory?.operations.length ?? 0),
@@ -1433,7 +1499,7 @@ export function SkilloomApp({
         setDetails(false);
         if (key.downArrow)
           setIndex((current) =>
-            Math.min(Math.max(0, rows.length - 1), current + 1),
+            Math.min(Math.max(0, browseRows.length - 1), current + 1),
           );
         if (key.upArrow) setIndex((current) => Math.max(0, current - 1));
         return;
@@ -1620,7 +1686,24 @@ export function SkilloomApp({
         });
       return;
     }
-    if (details && ["m", "g", "o", "x"].includes(input)) return;
+    if (details && ["m", "g", "o", "x", "b"].includes(input)) return;
+    if (input === "b") {
+      setGroupBySource((value) => !value);
+      return;
+    }
+    if (key.return && !details && activeRow?.kind === "source") {
+      if (query.trim()) {
+        setNotice("Clear search with x to collapse source groups.");
+      } else {
+        setCollapsedSources((current) => {
+          const next = new Set(current);
+          if (next.has(activeRow.key)) next.delete(activeRow.key);
+          else next.add(activeRow.key);
+          return next;
+        });
+      }
+      return;
+    }
     if (
       view === "Library" &&
       !details &&
@@ -1682,13 +1765,13 @@ export function SkilloomApp({
       return;
     }
     if (key.downArrow || input === "j")
-      setIndex(Math.min(Math.max(0, rows.length - 1), index + 1));
+      setIndex(Math.min(Math.max(0, browseRows.length - 1), index + 1));
     if (key.upArrow || input === "k") setIndex(Math.max(0, index - 1));
     if (key.pageDown)
-      setIndex(Math.min(Math.max(0, rows.length - 1), index + pageSize));
+      setIndex(Math.min(Math.max(0, browseRows.length - 1), index + pageSize));
     if (key.pageUp) setIndex(Math.max(0, index - pageSize));
     if (key.home) setIndex(0);
-    if (key.end) setIndex(Math.max(0, rows.length - 1));
+    if (key.end) setIndex(Math.max(0, browseRows.length - 1));
   });
   const offset = Math.floor(Math.max(0, index) / pageSize) * pageSize;
   const selectedMachine =
@@ -1725,8 +1808,12 @@ export function SkilloomApp({
                 ? "↑↓ select · Enter open · Esc library"
                 : `↑↓ select   Enter ${view === "Changes" ? "open" : "choose"}   Tab/Shift-Tab views   Esc library`
               : tiny
-                ? "↑↓ select · Enter/i details · / search · ?"
-                : `↑↓ select   Enter/i details   / search   ? help   q quit`;
+                ? activeRow?.kind === "source"
+                  ? "↑↓ select · Enter fold · / search · ?"
+                  : "↑↓ select · Enter/i details · / search · ?"
+                : activeRow?.kind === "source"
+                  ? "↑↓ select   Enter expand/collapse   / search   ? help   q quit"
+                  : `↑↓ select   Enter/i details   / search   ? help   q quit`;
   let content: React.ReactNode;
   if (outcome) {
     const lines = wrapLines(
@@ -1757,6 +1844,7 @@ export function SkilloomApp({
           "←/→ machine · g scope · o ownership",
           "x clear filters · r refresh",
           "s review sync · y apply in review",
+          "b group by Flat / Source · Enter expands source headings",
           "a add · d remove · v verify source",
           "l installation checks on this machine",
           "Details: Esc results · ↑↓ scroll",
@@ -1947,69 +2035,102 @@ export function SkilloomApp({
               <Text dimColor>Press x to clear filters or r to refresh.</Text>
             </Box>
           ) : (
-            rows.slice(offset, offset + pageSize).map((row, i) => (
-              <Box
-                key={row.name}
-                backgroundColor={
-                  offset + i === index ? color.selection : undefined
-                }
-              >
-                <Box width={skillColumnWidth} paddingRight={1}>
-                  <Text
-                    wrap="truncate-end"
-                    {...(offset + i === index
-                      ? { color: color.selectedText }
-                      : {})}
-                    bold={offset + i === index}
+            browseRows.slice(offset, offset + pageSize).map((item, i) => {
+              if (item.kind === "source")
+                return (
+                  <Box
+                    key={item.key}
+                    backgroundColor={
+                      offset + i === index ? color.selection : undefined
+                    }
+                    justifyContent="space-between"
                   >
-                    {offset + i === index ? "› " : "  "}
-                    {safeText(row.name)}
-                  </Text>
-                </Box>
-                <Box width={tiny ? 10 : 12}>
-                  <Text
-                    {...(offset + i === index
-                      ? { color: color.selectedText }
-                      : row.invocation === "unknown" ||
-                          row.invocation === "partial"
-                        ? { color: color.muted }
-                        : {})}
-                    bold={offset + i === index}
-                    wrap="truncate-end"
-                  >
-                    {invocationLabel(row.invocation)}
-                  </Text>
-                </Box>
-                {!tiny && (
-                  <Box width={12}>
                     <Text
+                      bold
                       wrap="truncate-end"
                       color={
-                        offset + i === index
-                          ? color.selectedText
-                          : row.ownership === "External"
-                            ? color.warning
-                            : color.muted
+                        offset + i === index ? color.selectedText : color.accent
                       }
                     >
-                      {row.ownership}
+                      {item.expanded ? "▾" : "▸"} {safeText(item.source.label)}
                     </Text>
-                  </Box>
-                )}
-                {!tiny && (
-                  <Box width={10}>
                     <Text
                       color={
                         offset + i === index ? color.selectedText : color.muted
                       }
-                      bold={offset + i === index}
                     >
-                      {row.machines.length}
+                      {" "}
+                      {item.source.entries.length} skills
                     </Text>
                   </Box>
-                )}
-              </Box>
-            ))
+                );
+              const row = item.entry;
+              return (
+                <Box
+                  key={item.key}
+                  backgroundColor={
+                    offset + i === index ? color.selection : undefined
+                  }
+                >
+                  <Box width={skillColumnWidth} paddingRight={1}>
+                    <Text
+                      wrap="truncate-end"
+                      {...(offset + i === index
+                        ? { color: color.selectedText }
+                        : {})}
+                      bold={offset + i === index}
+                    >
+                      {offset + i === index ? "› " : "  "}
+                      {safeText(row.name)}
+                    </Text>
+                  </Box>
+                  <Box width={tiny ? 10 : 12}>
+                    <Text
+                      {...(offset + i === index
+                        ? { color: color.selectedText }
+                        : row.invocation === "unknown" ||
+                            row.invocation === "partial"
+                          ? { color: color.muted }
+                          : {})}
+                      bold={offset + i === index}
+                      wrap="truncate-end"
+                    >
+                      {invocationLabel(row.invocation)}
+                    </Text>
+                  </Box>
+                  {!tiny && (
+                    <Box width={12}>
+                      <Text
+                        wrap="truncate-end"
+                        color={
+                          offset + i === index
+                            ? color.selectedText
+                            : row.ownership === "External"
+                              ? color.warning
+                              : color.muted
+                        }
+                      >
+                        {row.ownership}
+                      </Text>
+                    </Box>
+                  )}
+                  {!tiny && (
+                    <Box width={10}>
+                      <Text
+                        color={
+                          offset + i === index
+                            ? color.selectedText
+                            : color.muted
+                        }
+                        bold={offset + i === index}
+                      >
+                        {row.machines.length}
+                      </Text>
+                    </Box>
+                  )}
+                </Box>
+              );
+            })
           )}
         </Box>
         {!narrow && (
@@ -2018,11 +2139,26 @@ export function SkilloomApp({
             borderStyle="single"
             borderColor={color.muted}
           >
-            <Preview
-              entry={selected}
-              lines={bodyHeight - 2}
-              width={size.width - Math.floor(size.width * 0.7) - 2}
-            />
+            {activeRow?.kind === "source" ? (
+              <Box paddingX={1} flexDirection="column">
+                <Text bold color={color.accent}>
+                  {safeText(activeRow.source.label)}
+                </Text>
+                <Text> </Text>
+                <Text>{activeRow.source.entries.length} matching skills</Text>
+                <Text color={color.muted}>
+                  {query.trim()
+                    ? "Search keeps matching groups open."
+                    : `Enter to ${activeRow.expanded ? "collapse" : "expand"}`}
+                </Text>
+              </Box>
+            ) : (
+              <Preview
+                entry={selected}
+                lines={bodyHeight - 2}
+                width={size.width - Math.floor(size.width * 0.7) - 2}
+              />
+            )}
           </Box>
         )}
       </Box>
@@ -2070,6 +2206,7 @@ export function SkilloomApp({
               wrap="truncate-end"
               color={searching ? color.accent : color.muted}
             >
+              {`b Group: ${groupBySource ? "By source" : "Flat"} · `}
               {searching ? "Editing search: " : "Search: "}
               {searching
                 ? `${Array.from(query)
@@ -2089,7 +2226,7 @@ export function SkilloomApp({
                 ? `‹ ${safeText(selectedMachine)} ›`
                 : safeText(selectedMachine)}
               {scope === "all" ? "" : ` · ${scope}`}
-              {ownership === "all" ? "" : ` · ${ownership}`} · {rows.length}{" "}
+              {ownership === "all" ? "" : ` · ${ownership}`} · {skillCount}{" "}
               skills
             </Text>
             {!tiny && (
