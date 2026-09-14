@@ -296,11 +296,15 @@ def exercise(executable, home, width, height):
         if width >= 100:
             assert "Preview" in terminal.screen.text(), "Wide results lack their read-only preview cue"
             assert "Enter focus inspector" not in terminal.screen.text(), "Preview still exposes an independent focus mode"
-        terminal.send(b"\r", "full-page details at every width", lambda text: "Skill details" in text and "bravo-writing" in text and "Esc results" in text)
+        terminal.send(b"\r", "full-page details at every width", lambda text: "Skill details" in text and "bravo-writing" in text and ("Esc results" in text or "Esc back" in text))
         assert "Preview" not in terminal.screen.text(), "Details left the preview pane visible"
         assert "Results ·" not in terminal.screen.text(), "Details left the library table visible"
         terminal.send(b"\x1b", "return before i shortcut", lambda text: "Results" in text)
         terminal.send(b"i", "i opens full details from results", lambda text: "Skill details" in text)
+        assert "Reader missing" not in terminal.screen.text(), "Reader diagnostics clutter normal details"
+        terminal.send(b"e", "open detail diagnostics", lambda text: "Diagnostics" in text)
+        terminal.send(b"e", "return to concise details", lambda text: "Last recorded use" in text)
+
         terminal.send(b"/", "search from details returns to results", lambda text: "Editing search" in text and "Results" in text and "Skill details" not in text and "bravo-writing" in text)
         terminal.send(b"\r", "search Enter focuses preserved results", lambda text: "Editing search" not in text and "▏" not in text and "Results" in text and "bravo-writing" in text and "· global ·" in text)
         terminal.send(b"\r", "reopen explicit details", lambda text: "Skill details" in text and "bravo-writing" in text)
