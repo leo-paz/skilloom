@@ -26,6 +26,9 @@ function comparable(inventory: MachineInventory): string {
             historyTruncated: inventory.skillUsage.historyTruncated,
             sessions: inventory.skillUsage.sessions,
             sessionsTruncated: inventory.skillUsage.sessionsTruncated,
+            sessionCohorts: inventory.skillUsage.sessionCohorts,
+            unassignedSessionEvidence:
+              inventory.skillUsage.unassignedSessionEvidence,
             harnessCoverage: inventory.skillUsage.harnessCoverage,
             backfill: inventory.skillUsage.backfill,
             coverage: inventory.skillUsage.coverage.status,
@@ -53,6 +56,9 @@ function comparablePublished(content: string): string {
               historyTruncated: parsed.skillUsage.historyTruncated,
               sessions: parsed.skillUsage.sessions,
               sessionsTruncated: parsed.skillUsage.sessionsTruncated,
+              sessionCohorts: parsed.skillUsage.sessionCohorts,
+              unassignedSessionEvidence:
+                parsed.skillUsage.unassignedSessionEvidence,
               harnessCoverage: parsed.skillUsage.harnessCoverage,
               backfill: parsed.skillUsage.backfill,
               coverage: parsed.skillUsage.coverage.status,

@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import type { SkillUsageScan } from "./skill-usage.js";
 
-export const BACKFILL_BUDGET_MS = 120_000;
+export const BACKFILL_BUDGET_MS = Number.POSITIVE_INFINITY;
 
 /** One budget for a CLI invocation or a dashboard refresh, never one per batch. */
 export class UsageBackfillBudget {
@@ -35,7 +35,13 @@ export function backfillBudgetMilliseconds(args: string[]): number {
   if (index < 0) return BACKFILL_BUDGET_MS;
   const value = args[index + 1] ?? "";
   const seconds = Number(value);
-  if (!/^\d+$/.test(value) || seconds < 1 || seconds > 180)
-    throw new Error("--max-seconds requires a whole number from 1 to 180.");
+  if (
+    !/^\d+$/.test(value) ||
+    seconds < 1 ||
+    !Number.isSafeInteger(seconds * 1000)
+  )
+    throw new Error(
+      "--max-seconds requires a positive whole number of seconds.",
+    );
   return seconds * 1000;
 }

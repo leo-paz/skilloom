@@ -44,7 +44,7 @@ it("restarts an interrupted directory after churn without duplicating pending pa
     await utimes(root, new Date(), new Date(before.mtimeMs + 2000));
     await discoverBackfill(state, () => false);
     expect(state.queue).toEqual([]);
-    expect(state.skipped).toContain("directory_changed");
+    expect(state.skipped).not.toContain("directory_changed");
     expect(state.pending.map((file) => file.path).sort()).toEqual(
       (await readdir(root)).map((name) => join(root, name)).sort(),
     );
@@ -73,7 +73,7 @@ it("resumes a large interrupted directory after churn without omitting entries",
     }
     expect(state.queue).toEqual([]);
     expect(seen.size).toBe(BACKFILL_BATCH_SIZE + 8);
-    expect(state.skipped).toContain("directory_changed");
+    expect(state.skipped).not.toContain("directory_changed");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

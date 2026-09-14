@@ -34,6 +34,16 @@ import {
   usageEventId,
   withUsageLock,
 } from "./usage-journal.js";
+import { indexUsageJournal } from "./usage-journal-index.js";
+import { readProjectedUsageRecord } from "./usage-jsonl.js";
+import {
+  isUsageSessionIndexDirty,
+  readCachedUsageSessionIndex,
+  readUsageSessionIndex,
+  type SessionCohort,
+  type UnassignedSessionEvidence,
+  updateUsageSessionIndex,
+} from "./usage-session-index.js";
 import {
   groupUsageSessions,
   type SkillUsageSession,
@@ -75,6 +85,8 @@ export interface SkillUsageScan {
   history?: SkillUsageEvent[] | undefined;
   historyTruncated?: boolean | undefined;
   sessions?: SkillUsageSession[] | undefined;
+  sessionCohorts?: SessionCohort[] | undefined;
+  unassignedSessionEvidence?: UnassignedSessionEvidence[] | undefined;
   sessionsTruncated?: boolean | undefined;
   harnessCoverage?: HarnessUsageCoverage[] | undefined;
   backfill?:
@@ -148,6 +160,36 @@ export const skillUsageScanSchema = z.object({
     )
     .max(10000)
     .optional(),
+  sessionCohorts: z
+    .array(
+      z.object({
+        name: z.string().max(256),
+        harness: z.enum(["codex", "claude", "pi"]),
+        pathIds: z.array(z.string().regex(/^[a-f0-9]{64}$/)),
+        hasNameOnlyEvidence: z.boolean(),
+        sessionCount: z.number().int().nonnegative(),
+        firstUsedAt: z.string().datetime({ offset: true }),
+        lastUsedAt: z.string().datetime({ offset: true }),
+        verifiedLastUsedAtByPath: z.record(
+          z.string().regex(/^[a-f0-9]{64}$/),
+          z.string().datetime({ offset: true }),
+        ),
+        nameOnlyLastUsedAt: z.string().datetime({ offset: true }).optional(),
+      }),
+    )
+    .optional(),
+  unassignedSessionEvidence: z
+    .array(
+      z.object({
+        name: z.string().max(256),
+        harness: z.enum(["codex", "claude", "pi"]),
+        pathId: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional(),
+      }),
+    )
+    .optional(),
   sessionsTruncated: z.boolean().optional(),
   harnessCoverage: z
     .array(
@@ -207,7 +249,7 @@ interface Cursor {
   errors?: string[];
 }
 interface Cache {
-  version: 4;
+  version: 5;
   backfill?: BackfillState;
   files: Record<string, Cursor>;
   events: SkillUsageEvent[];
@@ -401,10 +443,46 @@ async function scanLocked(options: {
       ),
     ];
   };
+  const home = options.env.HOME || options.env.USERPROFILE;
+  const roots: Array<{ path: string; harness: SkillHarness }> = home
+    ? [
+        {
+          path: join(
+            options.env.CODEX_HOME || join(home, ".codex"),
+            "sessions",
+          ),
+          harness: "codex",
+        },
+        {
+          path: join(
+            options.env.CODEX_HOME || join(home, ".codex"),
+            "archived_sessions",
+          ),
+          harness: "codex",
+        },
+        {
+          path: join(
+            options.env.CLAUDE_CONFIG_DIR || join(home, ".claude"),
+            "projects",
+          ),
+          harness: "claude",
+        },
+        {
+          path: join(
+            options.env.PI_CODING_AGENT_DIR || join(home, ".pi/agent"),
+            "sessions",
+          ),
+          harness: "pi",
+        },
+      ]
+    : [];
   const knownFingerprint = digest(
     JSON.stringify(
-      [...pathNames.entries()].sort(([a], [b]) => a.localeCompare(b)),
+      roots.map((root) => ({ ...root, path: resolve(root.path) })),
     ) +
+      JSON.stringify(
+        [...pathNames.entries()].sort(([a], [b]) => a.localeCompare(b)),
+      ) +
       JSON.stringify(
         options.knownSkills
           .map((skill) => ({
@@ -415,7 +493,7 @@ async function scanLocked(options: {
       ),
   );
   let cache: Cache = {
-    version: 4,
+    version: 5,
     files: {},
     events: [],
     omittedEvents: false,
@@ -451,7 +529,7 @@ async function scanLocked(options: {
       await handle.close();
     }
     if (!reused) {
-      if (stored.version !== 4) throw new Error("cache version");
+      if (stored.version !== 5) throw new Error("cache version");
       if (backfill && stored.backfill) {
         const parsed = z
           .object({
@@ -659,39 +737,6 @@ async function scanLocked(options: {
     legacyCodexEventsByThread.set(event.sessionId, ids);
   }
 
-  const home = options.env.HOME || options.env.USERPROFILE;
-  const roots: Array<{ path: string; harness: SkillHarness }> = home
-    ? [
-        {
-          path: join(
-            options.env.CODEX_HOME || join(home, ".codex"),
-            "sessions",
-          ),
-          harness: "codex",
-        },
-        {
-          path: join(
-            options.env.CODEX_HOME || join(home, ".codex"),
-            "archived_sessions",
-          ),
-          harness: "codex",
-        },
-        {
-          path: join(
-            options.env.CLAUDE_CONFIG_DIR || join(home, ".claude"),
-            "projects",
-          ),
-          harness: "claude",
-        },
-        {
-          path: join(
-            options.env.PI_CODING_AGENT_DIR || join(home, ".pi/agent"),
-            "sessions",
-          ),
-          harness: "pi",
-        },
-      ]
-    : [];
   if (!home) limits.add("home_unavailable");
   const candidates: Candidate[] = [];
   const budgets = {
@@ -771,14 +816,29 @@ async function scanLocked(options: {
     for (const file of cache.backfill.pending) {
       try {
         const info = await lstat(file.path);
-        if (info.isFile())
-          pending.push({
-            ...file,
-            size: info.size,
-            modified: info.mtimeMs,
-            identity: `${info.dev}:${info.ino}`,
-          });
-        else cache.backfill.skipped.push("non_regular_file");
+        if (info.isFile()) {
+          const identity = `${info.dev}:${info.ino}`;
+          if (
+            identity !== file.identity ||
+            info.size < file.size ||
+            (info.size === file.size && info.mtimeMs !== file.modified)
+          ) {
+            // The originally discovered contents are no longer available at this
+            // path. Read the replacement, but retain an honest historical gap.
+            cache.backfill.skipped.push("changed_file");
+            delete cache.files[digest(file.path)];
+            pending.push({
+              ...file,
+              size: info.size,
+              modified: info.mtimeMs,
+              identity,
+            });
+          } else {
+            // An append does not move this traversal's EOF. Otherwise a busy
+            // writer could keep an unlimited historical scan pending forever.
+            pending.push(file);
+          }
+        } else cache.backfill.skipped.push("non_regular_file");
       } catch {
         cache.backfill.skipped.push("missing_or_unreadable");
       }
@@ -893,7 +953,10 @@ async function scanLocked(options: {
       cursor.inheritedBefore &&
       Date.parse(originalAt) <= Date.parse(cursor.inheritedBefore)
     ) {
-      cursor.omittedHistory = true;
+      if (Date.parse(originalAt) === Date.parse(cursor.inheritedBefore))
+        cursor.errors = [
+          ...new Set([...(cursor.errors ?? []), "ambiguous_fork_boundary"]),
+        ];
       return;
     }
     const codexSessionKnown =
@@ -930,7 +993,13 @@ async function scanLocked(options: {
       cursor.inheritedBefore &&
       Date.parse(text(record.timestamp)) <= Date.parse(cursor.inheritedBefore)
     ) {
-      cursor.omittedHistory = true;
+      if (
+        Date.parse(text(record.timestamp)) ===
+        Date.parse(cursor.inheritedBefore)
+      )
+        cursor.errors = [
+          ...new Set([...(cursor.errors ?? []), "ambiguous_fork_boundary"]),
+        ];
       return;
     }
     const contextPath =
@@ -1018,6 +1087,9 @@ async function scanLocked(options: {
         if (cursor.pending.length > 128) {
           cursor.pending.shift();
           limits.add("pending_calls");
+          cursor.errors = [
+            ...new Set([...(cursor.errors ?? []), "pending_calls"]),
+          ];
         }
       }
     };
@@ -1133,13 +1205,49 @@ async function scanLocked(options: {
       );
       try {
         const openedInfo = await handle.stat();
-        if (`${openedInfo.dev}:${openedInfo.ino}` !== file.identity) {
-          limits.add("changed_file");
-          continue;
-        }
         if (!openedInfo.isFile()) {
           limits.add("non_regular_file");
+          cache.backfill?.skipped.push("non_regular_file");
+          // Finish this unusable candidate instead of retrying the same path
+          // forever. A later traversal can discover a new regular replacement.
+          cache.files[key] = {
+            ...cursor,
+            offset: file.size,
+            errors: ["non_regular_file"],
+          };
           continue;
+        }
+        const openedIdentity = `${openedInfo.dev}:${openedInfo.ino}`;
+        if (
+          openedIdentity !== file.identity ||
+          openedInfo.size < file.size ||
+          (openedInfo.size === file.size &&
+            openedInfo.mtimeMs !== file.modified)
+        ) {
+          limits.add("changed_file");
+          cache.backfill?.skipped.push("changed_file");
+          // Bind the candidate to this open descriptor. A rename between lstat
+          // and open must not leave a stale identity queued for endless retries.
+          file.identity = openedIdentity;
+          file.size = openedInfo.size;
+          file.modified = openedInfo.mtimeMs;
+          cursor = {
+            identity: openedIdentity,
+            harness: file.harness,
+            offset: 0,
+            mtimeMs: 0,
+            cwd: "",
+            sessionId: "",
+            pending: [],
+            omittedHistory: false,
+          };
+          offset = 0;
+          discard = false;
+          if (!backfill && file.size > LIMITS.perFile) {
+            offset = file.size - LIMITS.perFile;
+            discard = true;
+            cursor.omittedHistory = true;
+          }
         }
         if (
           offset > 0 &&
@@ -1177,7 +1285,31 @@ async function scanLocked(options: {
         let start = 0;
         while (start < bytesRead && !stopped()) {
           const end = buffer.indexOf(10, start);
-          if (end < 0 || end >= bytesRead) break;
+          if (end < 0 || end >= bytesRead) {
+            // A complete final JSON value is a valid JSONL record even without
+            // its optional newline. Torn values keep their original checkpoint.
+            if (!discard && offset + bytesRead === file.size) {
+              try {
+                processRecord(
+                  object(
+                    JSON.parse(
+                      buffer.subarray(start, bytesRead).toString("utf8"),
+                    ),
+                  ),
+                  cursor,
+                  file.harness,
+                );
+                start = bytesRead;
+              } catch {
+                /* Wait for a possibly active writer to finish the row. */
+              }
+            }
+            break;
+          }
+          if (end === start && !discard) {
+            start = end + 1;
+            continue;
+          }
           if (discard) {
             discard = false;
             cursor.skippingLine = false;
@@ -1204,10 +1336,34 @@ async function scanLocked(options: {
           start < bytesRead && offset + bytesRead === file.size;
         if (cursor.awaitingAppend) limits.add("partial_record");
         if (!start && bytesRead === LIMITS.perFile) {
-          cursor.offset = offset + bytesRead;
-          cursor.omittedHistory = true;
-          cursor.skippingLine = true;
-          limits.add("oversized_record");
+          if (backfill) {
+            // A batch limit is not a record limit. Stream one large record to its
+            // boundary with bounded memory, then resume normal batch scheduling.
+            const projected = await readProjectedUsageRecord(
+              handle,
+              offset,
+              file.size,
+              options.signal,
+            );
+            coverage.bytesRead += projected.bytesRead;
+            cursor.offset = projected.nextOffset;
+            cursor.awaitingAppend = !projected.complete;
+            cursor.skippingLine = false;
+            if (projected.record)
+              processRecord(projected.record, cursor, file.harness);
+            if (projected.limitation) {
+              limits.add(projected.limitation);
+              cursor.errors = [
+                ...new Set([...(cursor.errors ?? []), projected.limitation]),
+              ];
+            }
+            if (!projected.complete) limits.add("partial_record");
+          } else {
+            cursor.offset = offset + bytesRead;
+            cursor.omittedHistory = true;
+            cursor.skippingLine = true;
+            limits.add("oversized_record");
+          }
         }
         cursor.mtimeMs = file.modified;
         cache.files[key] = cursor;
@@ -1215,6 +1371,10 @@ async function scanLocked(options: {
         await handle.close();
       }
     } catch {
+      if (options.signal?.aborted) {
+        limits.add("aborted");
+        break;
+      }
       limits.add("unreadable");
       if (backfill) {
         cache.backfill?.skipped.push("unreadable");
@@ -1248,10 +1408,7 @@ async function scanLocked(options: {
         .filter(([key]) => currentKeys.has(key))
         .slice(-LIMITS.candidates),
     );
-  if (
-    cache.omittedEvents ||
-    Object.values(cache.files).some((cursor) => cursor.omittedHistory)
-  )
+  if (Object.values(cache.files).some((cursor) => cursor.omittedHistory))
     limits.add("history_window");
   const harnessCoverage: HarnessUsageCoverage[] = (
     ["codex", "claude", "pi"] as const
@@ -1365,6 +1522,11 @@ async function scanLocked(options: {
   )
     Object.assign(coverage, cache.lastCoverage);
   cache.lastCoverage = coverage;
+  let sessionIndex = await readCachedUsageSessionIndex(directory).catch(
+    () => undefined,
+  );
+  let commitStage: "journal" | "session_index" | "cache" = "journal";
+  let sessionIndexUnavailable = false;
   if (!options.signal?.aborted) {
     try {
       await appendUsageEvents(
@@ -1379,6 +1541,32 @@ async function scanLocked(options: {
             event.sessionId !== journalEvents.get(event.id)!.sessionId,
         ),
       );
+      // Migrate old journals and hook events with persisted byte cursors. Unlike
+      // recent-history reads this importer has no age, byte, or event-count window.
+      // Intermediate backfill batches leave the previous complete summary intact.
+      commitStage = "session_index";
+      const indexLimitations = await indexUsageJournal(
+        directory,
+        options.signal,
+      );
+      for (const reason of indexLimitations) limits.add(reason);
+      // Index legacy cache-only rows too, before applying the display retention cap.
+      await updateUsageSessionIndex(
+        directory,
+        retained.filter((event) => !journalEvents.has(event.id)),
+      );
+      if (
+        (backfill && cache.backfill?.completed) ||
+        (!backfill && sessionIndex)
+      ) {
+        if (!sessionIndex || (await isUsageSessionIndexDirty(directory)))
+          sessionIndex = await readUsageSessionIndex(
+            directory,
+            options.signal ? { signal: options.signal } : {},
+          );
+      }
+      if (sessionIndex) limits.delete("journal_window");
+      commitStage = "cache";
       await saveUsageManifest(directory, options.knownSkills);
       await mkdir(dirname(cachePath), { recursive: true });
       const pending = `${cachePath}.${randomUUID()}.tmp`;
@@ -1409,7 +1597,19 @@ async function scanLocked(options: {
         validatedCaches.delete(validatedCaches.keys().next().value!);
     } catch {
       validatedCaches.delete(cachePath);
-      limits.add("cache_write_failed");
+      if (options.signal?.aborted) limits.add("aborted");
+      else if (commitStage === "session_index") {
+        sessionIndexUnavailable = true;
+        limits.add("session_index_unavailable");
+      } else limits.add("cache_write_failed");
+    }
+  }
+  if (sessionIndexUnavailable) {
+    for (const item of historical?.harnessCoverage ?? harnessCoverage) {
+      item.status = "partial";
+      item.limitations = [
+        ...new Set([...item.limitations, "session_index_unavailable"]),
+      ];
     }
   }
   coverage.limitsHit = [...limits].sort();
@@ -1434,8 +1634,16 @@ async function scanLocked(options: {
         }
       : {}),
     history: cache.events.slice(-1000).reverse(),
-    sessions: groupUsageSessions(cache.events),
-    sessionsTruncated: cache.omittedEvents || journal.truncated,
+    sessions: sessionIndex?.recentSessions ?? groupUsageSessions(cache.events),
+    ...(sessionIndex
+      ? {
+          sessionCohorts: sessionIndex.cohorts,
+          unassignedSessionEvidence: sessionIndex.unassignedEvidence ?? [],
+        }
+      : {}),
+    sessionsTruncated:
+      sessionIndexUnavailable ||
+      (!sessionIndex && (cache.omittedEvents || journal.truncated)),
     historyTruncated: cache.omittedEvents || cache.events.length > 1000,
     coverage,
   };

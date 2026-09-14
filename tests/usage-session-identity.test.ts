@@ -258,7 +258,10 @@ it("does not count Pi fork copies at the same millisecond as the fork header", a
   expect(
     scan.history!.filter((event) => event.sessionId === digest("pi:fork")),
   ).toHaveLength(1);
-  expect(scan.coverage.limitsHit).toContain("history_window");
+  expect(
+    scan.harnessCoverage?.find((coverage) => coverage.harness === "pi")
+      ?.limitations,
+  ).toContain("ambiguous_fork_boundary");
 });
 
 it("corrects a previously journaled Pi fork boundary event using cached fork metadata", async () => {

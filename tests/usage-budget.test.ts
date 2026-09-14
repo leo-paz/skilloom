@@ -12,7 +12,7 @@ import {
 describe("backfill time budget", () => {
   it("caps all batches together and keeps completed versus paused coverage distinct", () => {
     let now = 0;
-    const budget = new UsageBackfillBudget(BACKFILL_BUDGET_MS, () => now);
+    const budget = new UsageBackfillBudget(120_000, () => now);
     const scan: SkillUsageScan = {
       version: 2,
       usage: [],
@@ -51,14 +51,15 @@ describe("backfill time budget", () => {
     budget.mark(scan);
     expect(scan.backfill?.paused).toBeUndefined();
   });
-  it("defaults to two minutes and accepts only bounded explicit overrides", () => {
-    expect(backfillBudgetMilliseconds([])).toBe(120_000);
+  it("defaults to completion and accepts optional finite deadlines", () => {
+    expect(backfillBudgetMilliseconds([])).toBe(Infinity);
+    expect(BACKFILL_BUDGET_MS).toBe(Infinity);
+    expect(backfillBudgetMilliseconds(["--max-seconds", "600"])).toBe(600_000);
     expect(backfillBudgetMilliseconds(["--max-seconds", "180"])).toBe(180_000);
     for (const invalid of [
       undefined,
       "0",
       "-1",
-      "181",
       "Infinity",
       "1.5",
       "--restart",
@@ -68,6 +69,6 @@ describe("backfill time budget", () => {
           "--max-seconds",
           ...(invalid ? [invalid] : []),
         ]),
-      ).toThrow(/1 to 180/);
+      ).toThrow(/positive whole/);
   });
 });

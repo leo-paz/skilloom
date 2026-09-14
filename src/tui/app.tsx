@@ -14,6 +14,7 @@ import {
   type LibraryEntry,
   type LibrarySourceGroup,
   librarySessions,
+  librarySessionTotals,
   observedLabel,
   ownershipLabel,
   safeText,
@@ -321,7 +322,38 @@ function inspectorLines(
       ),
     })),
   });
-  const latest = verifiedHistory[0];
+  const durableTotals = entry.usageMachines.flatMap((machine) =>
+    (["codex", "claude", "pi"] as const).map((harness) => {
+      const legacy = verifiedHistory.filter(
+        (session) =>
+          session.machineId === machine.id && session.harness === harness,
+      );
+      return {
+        machine: machine.name,
+        harness,
+        totals: librarySessionTotals(entry, machine.id, harness) ?? {
+          verified: legacy.length,
+          named: 0,
+          lastUsedAt: legacy[0]?.lastUsedAt,
+        },
+      };
+    }),
+  );
+  const latestIndexed = durableTotals
+    .filter((row) => row.totals.lastUsedAt)
+    .sort(
+      (a, b) =>
+        Date.parse(b.totals.lastUsedAt!) - Date.parse(a.totals.lastUsedAt!),
+    )[0];
+  const latest = latestIndexed && {
+    lastUsedAt: latestIndexed.totals.lastUsedAt!,
+    harness: latestIndexed.harness,
+    machine: latestIndexed.machine,
+  };
+  const recordedSessionCount = durableTotals.reduce(
+    (sum, row) => sum + row.totals.verified,
+    0,
+  );
   content.push(
     { text: " " },
     { text: diagnostics ? "Diagnostics" : "Last recorded use", bold: true },
@@ -332,7 +364,7 @@ function inspectorLines(
             tone: color.good,
           },
           {
-            text: `${harnessLabel(latest.harness)} · ${latest.machine} · ${verifiedHistory.length} recorded session${verifiedHistory.length === 1 ? "" : "s"}`,
+            text: `${harnessLabel(latest.harness)} · ${latest.machine} · ${recordedSessionCount} recorded session${recordedSessionCount === 1 ? "" : "s"}`,
             tone: color.muted,
           },
         ]
@@ -711,16 +743,23 @@ function inspectorLines(
     } else
       content.push({
         text: entry.occurrences.some(
-          (record) => record.usageSessions !== undefined,
+          (record) => record.sessionCohorts !== undefined,
         )
-          ? "No sessions with verified identity in retained evidence."
-          : "Session history not collected. Refresh on the originating machine.",
+          ? "No session details in the recent-history window."
+          : entry.occurrences.some(
+                (record) => record.usageSessions !== undefined,
+              )
+            ? "No sessions with verified identity in retained evidence."
+            : "Session history not collected. Refresh on the originating machine.",
         tone: color.muted,
       });
   }
   if (
     diagnostics &&
-    entry.occurrences.some((record) => record.sessionsTruncated)
+    entry.occurrences.some(
+      (record) =>
+        record.sessionsTruncated && record.sessionCohorts === undefined,
+    )
   )
     content.push({
       text: "Older evidence is omitted; session counts are a lower bound.",
@@ -1009,9 +1048,7 @@ export function SkilloomApp({
                 next.skillUsage?.backfill?.paused &&
                 !inventory.skillUsage?.backfill?.paused
               )
-                setNotice(
-                  "History paused after 2 minutes. Progress saved; r continues.",
-                );
+                setNotice("History paused. Progress saved; r continues.");
               setInventory((current) =>
                 current === inventory ? next : current,
               );
@@ -1024,10 +1061,7 @@ export function SkilloomApp({
               );
           });
       },
-      inventory.skillUsage?.backfill?.complete ||
-        inventory.skillUsage?.backfill?.paused
-        ? 30000
-        : 2000,
+      inventory.skillUsage?.backfill?.complete ? 30000 : 2000,
     );
     return () => {
       active = false;

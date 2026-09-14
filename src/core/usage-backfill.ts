@@ -145,7 +145,6 @@ export async function discoverBackfill(
           current.modified !== directory.mtimeMs)
       ) {
         current.skip = 0;
-        state.skipped.push("directory_changed");
       }
       current.identity = identity;
       current.modified = directory.mtimeMs;
@@ -215,7 +214,6 @@ export async function discoverBackfill(
         current.skip = 0;
         current.identity = `${after.dev}:${after.ino}`;
         current.modified = after.mtimeMs;
-        state.skipped.push("directory_changed");
       } else if (exhausted) {
         directoryPages.delete(current.path);
         state.queue.shift();

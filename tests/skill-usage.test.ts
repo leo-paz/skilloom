@@ -595,5 +595,5 @@ it("does not attribute inherited Pi fork reads to a different checkout", async (
       .digest("hex"),
   );
   expect(result.history).toHaveLength(1);
-  expect(result.coverage.limitsHit).toContain("history_window");
+  expect(result.coverage.limitsHit).not.toContain("history_window");
 });

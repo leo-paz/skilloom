@@ -1,5 +1,9 @@
 import type { SkillUsageEvent } from "./skill-usage.js";
 import type { InventorySkill, MachineInventory, Scope } from "./types.js";
+import type {
+  SessionCohort,
+  UnassignedSessionEvidence,
+} from "./usage-session-index.js";
 import type { SkillUsageSession } from "./usage-sessions.js";
 
 export interface InventoryQuery {
@@ -23,6 +27,8 @@ export interface InventoryOccurrence extends InventorySkill {
   nameEvidence?: InventoryOccurrence["usedBy"];
   usageHistory?: SkillUsageEvent[] | undefined;
   usageSessions?: SkillUsageSession[] | undefined;
+  sessionCohorts?: SessionCohort[] | undefined;
+  unassignedSessionEvidence?: UnassignedSessionEvidence[] | undefined;
   sessionsTruncated?: boolean | undefined;
   historyTruncated?: boolean | undefined;
   usageCoverage?: string | undefined;
@@ -109,6 +115,8 @@ export function queryInventory(
       historyTruncated: boolean;
       sessions: Map<string, SkillUsageSession[]> | undefined;
       sessionsTruncated: boolean;
+      sessionCohorts: SessionCohort[] | undefined;
+      unassignedSessionEvidence: UnassignedSessionEvidence[] | undefined;
     }
   >();
   for (const snapshot of [inventory, ...(inventory.remoteObservations ?? [])]) {
@@ -152,12 +160,20 @@ export function queryInventory(
       historyTruncated: snapshot.skillUsage.historyTruncated === true,
       sessions,
       sessionsTruncated: snapshot.skillUsage.sessionsTruncated === true,
+      sessionCohorts: snapshot.skillUsage.sessionCohorts,
+      unassignedSessionEvidence: snapshot.skillUsage.unassignedSessionEvidence,
     });
   }
   for (const record of records) {
     const usage = usageByMachine.get(record.machine.id);
     if (usage) {
       const evidence = usage.skills.get(record.name) ?? [];
+      record.unassignedSessionEvidence =
+        usage.unassignedSessionEvidence?.filter(
+          (item) =>
+            item.name === record.name &&
+            (!item.pathId || record.usagePathIds?.includes(item.pathId)),
+        );
       record.usedBy = evidence.filter(
         (item) => item.pathId && record.usagePathIds?.includes(item.pathId),
       );
@@ -178,6 +194,9 @@ export function queryInventory(
             (session) =>
               !session.pathId || record.usagePathIds?.includes(session.pathId),
           ) ?? (usage.sessions ? [] : undefined);
+      record.sessionCohorts = usage.sessionCohorts?.filter(
+        (cohort) => cohort.name === record.name,
+      );
       record.sessionsTruncated = usage.sessionsTruncated;
       record.usageObservedAt = usage.observedAt;
       record.usageCoverage = usage.coverage;

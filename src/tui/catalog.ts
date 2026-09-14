@@ -317,3 +317,47 @@ export function librarySessions(entry: LibraryEntry): Array<{
       a.sessionId.localeCompare(b.sessionId),
   );
 }
+
+/** Count disjoint session cohorts once, even when a session used several selected copies. */
+export function librarySessionTotals(
+  entry: LibraryEntry,
+  machineId: string,
+  harness: string,
+) {
+  const records = entry.occurrences.filter(
+    (record) => record.machine.id === machineId,
+  );
+  const indexed = records.some((record) => record.sessionCohorts !== undefined);
+  if (!indexed) return undefined;
+  const paths = new Set(records.flatMap((record) => record.usagePathIds ?? []));
+  const cohorts = new Map<
+    string,
+    NonNullable<(typeof records)[number]["sessionCohorts"]>[number]
+  >();
+  for (const record of records)
+    for (const cohort of record.sessionCohorts ?? []) {
+      if (cohort.harness !== harness) continue;
+      const key = JSON.stringify([
+        cohort.name,
+        cohort.harness,
+        [...cohort.pathIds].sort(),
+        cohort.hasNameOnlyEvidence,
+      ]);
+      cohorts.set(key, cohort);
+    }
+  let verified = 0,
+    named = 0;
+  let lastUsedAt: string | undefined;
+  for (const cohort of cohorts.values()) {
+    const matched = cohort.pathIds.filter((path) => paths.has(path));
+    if (matched.length) {
+      verified += cohort.sessionCount;
+      for (const path of matched) {
+        const at = cohort.verifiedLastUsedAtByPath[path];
+        if (at && (!lastUsedAt || Date.parse(at) > Date.parse(lastUsedAt)))
+          lastUsedAt = at;
+      }
+    } else if (cohort.hasNameOnlyEvidence) named += cohort.sessionCount;
+  }
+  return { verified, named, lastUsedAt };
+}

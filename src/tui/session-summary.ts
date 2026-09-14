@@ -1,4 +1,9 @@
-import { harnessLabel, type LibraryEntry, librarySessions } from "./catalog.js";
+import {
+  harnessLabel,
+  type LibraryEntry,
+  librarySessions,
+  librarySessionTotals,
+} from "./catalog.js";
 
 const agents = ["codex", "claude", "pi"] as const;
 export function sessionUsageSummary(entry: LibraryEntry) {
@@ -13,25 +18,47 @@ export function sessionUsageSummary(entry: LibraryEntry) {
     const records = entry.occurrences.filter(
       (r) => r.machine.id === machine.id,
     );
-    const collected = records.some((r) => r.usageSessions !== undefined);
+    const collected = records.some(
+      (r) => r.sessionCohorts !== undefined || r.usageSessions !== undefined,
+    );
     const cells = agents.map((agent) => {
       const found = sessions.filter(
         (s) => s.machineId === machine.id && s.harness === agent,
       );
-      const known = found.filter((s) => s.pathMatched).length;
-      const named = found.filter((s) => !s.pathMatched).length;
+      const totals = librarySessionTotals(entry, machine.id, agent);
+      const known =
+        totals?.verified ?? found.filter((s) => s.pathMatched).length;
+      const named = totals?.named ?? found.filter((s) => !s.pathMatched).length;
       const context = `${machine.name} · ${harnessLabel(agent)}`;
-      const missing = records.some((record) => {
-        const total = (record.usedBy ?? [])
-          .filter((u) => u.harness === agent)
-          .reduce((sum, u) => sum + u.count, 0);
-        const attributed = (record.usageSessions ?? [])
-          .filter((s) => s.harness === agent && s.pathId)
-          .reduce((sum, s) => sum + s.eventCount, 0);
-        return total > attributed;
-      });
-      const nameEvidence = records.some((record) =>
-        record.nameEvidence?.some((u) => u.harness === agent),
+      const missing = totals
+        ? records.some(
+            (record) =>
+              record.unassignedSessionEvidence?.some(
+                (item) => item.harness === agent && !!item.pathId,
+              ) ||
+              record.usageHistory?.some(
+                (event) =>
+                  event.harness === agent &&
+                  !!event.pathId &&
+                  (!event.sessionId ||
+                    (agent === "codex" && event.sessionIdentityVersion !== 1)),
+              ),
+          )
+        : records.some((record) => {
+            const total = (record.usedBy ?? [])
+              .filter((u) => u.harness === agent)
+              .reduce((sum, u) => sum + u.count, 0);
+            const attributed = (record.usageSessions ?? [])
+              .filter((s) => s.harness === agent && s.pathId)
+              .reduce((sum, s) => sum + s.eventCount, 0);
+            return total > attributed;
+          });
+      const nameEvidence = records.some(
+        (record) =>
+          record.nameEvidence?.some((u) => u.harness === agent) ||
+          record.unassignedSessionEvidence?.some(
+            (item) => item.harness === agent && !item.pathId,
+          ),
       );
       if (collected && missing)
         note(
@@ -79,7 +106,7 @@ export function sessionUsageSummary(entry: LibraryEntry) {
     if (machine.backfill && !machine.backfill.complete)
       note(
         machine.backfill.paused
-          ? "The two-minute limit paused older history. Refresh this machine to continue."
+          ? "Older history was paused. Refresh this machine to continue."
           : "Older history is still being checked.",
         machine.name,
       );
@@ -89,6 +116,12 @@ export function sessionUsageSummary(entry: LibraryEntry) {
         const explanation: Record<string, string> = {
           history_window:
             "Earlier history is incomplete, so counts may miss some sessions.",
+          ambiguous_fork_boundary:
+            "Some activity shares its fork's creation timestamp and cannot be assigned to a session reliably.",
+          projection_limit:
+            "Some unusually large records contain more structured invocation data than the reader can safely interpret.",
+          session_index_unavailable:
+            "Session counts could not be saved. Refresh this machine to retry.",
           partial_record: "An unfinished log entry could not be checked yet.",
           pending_results: "Some tool calls have no recorded result yet.",
           unreadable: "Some session logs could not be read.",
