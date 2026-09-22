@@ -100,7 +100,53 @@ it("carries pending results across file appends and does not duplicate refreshed
   const final = JSON.stringify(records[2]);
   await appendFile(log, final.slice(0, 30));
   expect((await scanSkillUsage(args)).history).toEqual([]);
-  await appendFile(log, final.slice(30) + "\n");
+  await appendFile(log, final.slice(30));
   expect((await scanSkillUsage(args)).history).toHaveLength(1);
-  expect((await scanSkillUsage(args)).history).toHaveLength(1);
+  await appendFile(log, "\n");
+  const terminated = await scanSkillUsage(args);
+  expect(terminated.history).toHaveLength(1);
+  expect(terminated.coverage.limitsHit).not.toContain("malformed_records");
+});
+
+it("streams tool results larger than a batch and counts distinct sessions rather than repeated reads", async () => {
+  const home = await mkdtemp(join(tmpdir(), "usage-large-result-"));
+  const root = join(home, ".pi/agent/sessions");
+  const target = join(home, "review/SKILL.md");
+  await mkdir(root, { recursive: true });
+  await mkdir(join(home, "review"));
+  await writeFile(target, "skill");
+  const records = pair(target, "one-session");
+  (records[2]!.message as Record<string, unknown>).content = [
+    { type: "text", text: "x".repeat(9 * 1024 * 1024) },
+  ];
+  await writeFile(
+    join(root, "one.jsonl"),
+    [...records, ...pair(target, "one-session").slice(1)]
+      .map((value) => JSON.stringify(value))
+      .join("\n") + "\n",
+  );
+  const args = {
+    env: { HOME: home },
+    cachePath: join(home, "usage.json"),
+    knownSkills: [{ name: "review", paths: [target] }],
+    mode: "backfill" as const,
+  };
+  let result = await scanSkillUsage(args);
+  for (let pass = 0; !result.backfill?.complete && pass < 10; pass++)
+    result = await scanSkillUsage(args);
+  expect(result.backfill?.complete).toBe(true);
+  expect(result.coverage.limitsHit).not.toContain("oversized_record");
+  expect(
+    result.harnessCoverage?.find((item) => item.harness === "pi")?.limitations,
+  ).toEqual([]);
+  expect(
+    result.sessionCohorts?.reduce(
+      (sum, cohort) => sum + cohort.sessionCount,
+      0,
+    ),
+  ).toBe(1);
+  expect(result.sessionsTruncated).toBe(false);
+  expect((await scanSkillUsage(args)).sessionCohorts).toEqual(
+    result.sessionCohorts,
+  );
 });

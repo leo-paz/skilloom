@@ -47,6 +47,8 @@ run_suite() (
   export HOME="$isolated_home"
   export XDG_CONFIG_HOME="$isolated_home/.config"
   export CODEX_HOME="$isolated_home/.codex"
+  export CLAUDE_CONFIG_DIR="$isolated_home/.claude"
+  export PI_CODING_AGENT_DIR="$isolated_home/.pi/agent"
   export npm_config_cache="$isolated_home/.npm"
   cd "$project"
   "${command[@]}" --help
@@ -66,6 +68,23 @@ run_suite() (
   "${command[@]}" sync --yes --json | tee "$isolated_home/verified.json"
   node -e 'const fs=require("fs");const result=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(!result.converged||result.completed.length)process.exit(1)' "$isolated_home/verified.json"
   "${command[@]}" observe --json
+  # Exercise the real Node/Bun filesystem iterators with both empty and sparse indexes.
+  "${command[@]}" usage backfill > "$isolated_home/empty-history.jsonl"
+  node - "$isolated_home" <<'JS'
+const fs = require("node:fs"), path = require("node:path"), home = process.argv[2];
+const root = path.join(home, ".pi/agent/sessions");
+fs.mkdirSync(root, {recursive: true});
+for (const [session, calls] of [["one", 2], ["two", 1]]) {
+  const rows = [{type: "session", id: session, cwd: home}];
+  for (let i = 0; i < calls; i++) {
+    rows.push({type: "message", timestamp: "2026-09-10T01:00:00Z", message: {role: "assistant", content: [{type: "toolCall", name: "read", id: String(i), arguments: {path: path.join(home, ".agents/skills/review/SKILL.md")}}]}});
+    rows.push({type: "message", timestamp: "2026-09-10T01:00:00Z", message: {role: "toolResult", toolCallId: String(i), isError: false}});
+  }
+  fs.writeFileSync(path.join(root, `${session}.jsonl`), rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+}
+JS
+  "${command[@]}" usage backfill --restart > "$isolated_home/session-history.jsonl"
+  node -e 'const fs=require("fs");const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const count=data.skillUsage.sessionCohorts.filter(c=>c.name==="review"&&c.harness==="pi").reduce((n,c)=>n+c.sessionCount,0);if(count!==2||!data.skillUsage.backfill.complete)process.exit(1)' "$isolated_home/.config/skilloom/inventory.json"
   "${command[@]}" doctor --json
   ln -s "$isolated_home/unavailable-skill" "$isolated_home/.agents/skills/missing-fixture"
   "${command[@]}" doctor --installations --json > "$isolated_home/installation-checks.json"

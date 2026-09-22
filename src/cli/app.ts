@@ -77,9 +77,9 @@ const commandHelp: Record<string, string> = {
   doctor: `Usage: skilloom doctor [--installations] [--json] [--config PATH]
 
 Check runtime, dependencies and configuration. With --installations, inspect local installation entries without changing files, scanning logs, or contacting other machines. Exit 0 means the bounded scan completed within its stated scope, even with findings; exit 4 means inspection was incomplete.`,
-  usage: `Usage: skilloom usage status|install|uninstall|refresh|backfill [--once] [--restart] [--max-seconds 1..180]|publish [--dry-run]
+  usage: `Usage: skilloom usage status|install|uninstall|refresh|backfill [--once] [--restart] [--max-seconds N]|publish [--dry-run]
 
-Install hooks locally, refresh recent evidence, or resume history backfill. Backfill checkpoints after two minutes by default; run it again to continue. Ctrl-C pauses safely. Preview sharing with usage publish --dry-run, then publish with usage publish.`,
+Install hooks locally, refresh recent evidence, or resume history backfill. Backfill continues until discovered history is processed, checkpointing between batches. Use --max-seconds N for an optional time limit. Ctrl-C pauses safely. Preview sharing with usage publish --dry-run, then publish with usage publish.`,
   tui: `Usage: skilloom [tui] [--config PATH]
 
 Open a full-screen skill library. Search with /, switch views with 1–3 or Tab, inspect with Enter, check local installations with l, refresh with r, and review sync with s. Press ? for all keys.`,

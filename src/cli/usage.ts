@@ -39,12 +39,6 @@ export async function collectInventoryUsage(
     restartBackfill,
     ...(signal ? { signal } : {}),
   });
-  if (mode === "tail" && inventory.skillUsage?.backfill) {
-    next.skillUsage.backfill = inventory.skillUsage.backfill;
-    // Preserve completed historical coverage while the tail updates live evidence.
-    if (inventory.skillUsage.harnessCoverage)
-      next.skillUsage.harnessCoverage = inventory.skillUsage.harnessCoverage;
-  }
   return next;
 }
 export async function saveUsageIfCurrent(
@@ -171,7 +165,7 @@ export async function usageCommand(
   }
   if (action !== "backfill" && action !== "refresh")
     throw new Error(
-      "Usage: skilloom usage status|install|uninstall|backfill [--once] [--restart] [--max-seconds 1..180]|refresh|publish [--dry-run]",
+      "Usage: skilloom usage status|install|uninstall|backfill [--once] [--restart] [--max-seconds N]|refresh|publish [--dry-run]",
     );
   const abort = new AbortController();
   const budget = new UsageBackfillBudget(backfillBudgetMilliseconds(args));
@@ -202,14 +196,20 @@ export async function usageCommand(
           passes,
           ...(action === "backfill"
             ? {
-                timeBudgetSeconds: budget.milliseconds / 1000,
+                timeBudgetSeconds: Number.isFinite(budget.milliseconds)
+                  ? budget.milliseconds / 1000
+                  : null,
                 paused: next.skillUsage?.backfill?.paused === "time_limit",
               }
             : {}),
           backfill: next.skillUsage?.backfill,
           coverage: next.skillUsage?.harnessCoverage,
           events: next.skillUsage?.history?.length,
-          recordedSessions:
+          indexedSkillSessions: next.skillUsage?.sessionCohorts?.reduce(
+            (total, cohort) => total + cohort.sessionCount,
+            0,
+          ),
+          recentSessions:
             next.skillUsage?.sessions === undefined
               ? undefined
               : new Set(
@@ -220,6 +220,14 @@ export async function usageCommand(
         }),
       );
       if (
+        next.skillUsage?.coverage.limitsHit.includes(
+          "session_index_unavailable",
+        )
+      )
+        throw new Error(
+          "Session counts could not be saved. Scan progress is retained; rerun usage backfill to retry.",
+        );
+      if (
         action === "refresh" ||
         args.includes("--once") ||
         next.skillUsage?.backfill?.complete ||
@@ -227,7 +235,7 @@ export async function usageCommand(
         abort.signal.aborted
       )
         break;
-      await delay(50, undefined, { signal: abort.signal });
+      await delay(0, undefined, { signal: abort.signal });
     } while (true);
   } catch (error) {
     if (!abort.signal.aborted) throw error;

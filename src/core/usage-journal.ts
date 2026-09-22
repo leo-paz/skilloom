@@ -235,7 +235,10 @@ export async function readUsageJournal(
           if (
             event.version !== 1 ||
             !/^[a-f0-9]{64}$/.test(event.id) ||
-            !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(event.name) ||
+            typeof event.name !== "string" ||
+            !event.name.length ||
+            event.name.length > 256 ||
+            /[\x00-\x1f\x7f]/.test(event.name) ||
             !["codex", "claude", "pi"].includes(event.harness) ||
             !["read", "invoke", "load"].includes(event.evidence) ||
             !Number.isFinite(Date.parse(event.at)) ||

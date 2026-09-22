@@ -60,7 +60,9 @@ it("CLI checkpoints and reports its cutoff without claiming complete, then resum
     return partial();
   });
   try {
-    expect(await usageCommand(["backfill"], f.runtime)).toBe(0);
+    expect(
+      await usageCommand(["backfill", "--max-seconds", "120"], f.runtime),
+    ).toBe(0);
     expect(scan).toHaveBeenCalledTimes(1);
     const result = JSON.parse(f.output[0]!);
     expect(result).toMatchObject({
@@ -71,14 +73,16 @@ it("CLI checkpoints and reports its cutoff without claiming complete, then resum
     expect(
       JSON.parse(await readFile(f.path, "utf8")).skillUsage.backfill.paused,
     ).toBe("time_limit");
-    expect(await usageCommand(["backfill"], f.runtime)).toBe(0);
+    expect(
+      await usageCommand(["backfill", "--max-seconds", "120"], f.runtime),
+    ).toBe(0);
     expect(scan).toHaveBeenCalledTimes(2);
     expect(scan.mock.calls[1]![0].restartBackfill).toBe(false);
   } finally {
     await rm(f.home, { recursive: true, force: true });
   }
 });
-it("dashboard stops historical work after two minutes while later refreshes only tail recent events", async () => {
+it("dashboard continues historical batches beyond the former deadline", async () => {
   const f = await fixture();
   let now = 0;
   vi.spyOn(performance, "now").mockImplementation(() => now);
@@ -92,16 +96,47 @@ it("dashboard stops historical work after two minutes while later refreshes only
   const api = createDashboardBackend(f.runtime, async () => 0);
   try {
     const first = await api.collectHistory!(f.inventory);
-    expect(first.skillUsage?.backfill?.paused).toBe("time_limit");
+    expect(first.skillUsage?.backfill?.paused).toBeUndefined();
     await api.collectHistory!(first);
     await api.collectHistory!(first);
     expect(scan.mock.calls.map(([options]) => options.mode)).toEqual([
       "backfill",
-      "tail",
-      "tail",
+      "backfill",
+      "backfill",
     ]);
   } finally {
     await api.shutdown();
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
+it("CLI runs beyond three minutes until history is processed by default", async () => {
+  const f = await fixture();
+  let now = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  let pass = 0;
+  const scan = vi
+    .mocked(scanSkillUsage)
+    .mockReset()
+    .mockImplementation(async () => {
+      now += 180_000;
+      const result = partial();
+      if (++pass === 3)
+        result.backfill = {
+          complete: true,
+          filesDiscovered: 200,
+          filesPending: 0,
+        };
+      return result;
+    });
+  try {
+    expect(await usageCommand(["backfill"], f.runtime)).toBe(0);
+    expect(scan).toHaveBeenCalledTimes(3);
+    const result = JSON.parse(f.output.at(-1)!);
+    expect(result.timeBudgetSeconds).toBeNull();
+    expect(result.paused).toBe(false);
+    expect(result.backfill.complete).toBe(true);
+  } finally {
     await rm(f.home, { recursive: true, force: true });
   }
 });

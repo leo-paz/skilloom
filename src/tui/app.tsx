@@ -8,10 +8,13 @@ import type { InventoryProgress, MachineInventory } from "../core/types.js";
 import {
   buildLibrary,
   filterLibrary,
+  groupLibraryBySource,
   harnessLabel,
   invocationLabel,
   type LibraryEntry,
+  type LibrarySourceGroup,
   librarySessions,
+  librarySessionTotals,
   observedLabel,
   ownershipLabel,
   safeText,
@@ -19,6 +22,39 @@ import {
 import { InstallationChecks } from "./installation-checks.js";
 import { SelectionMenu } from "./selection-menu.js";
 import { sessionUsageSummary } from "./session-summary.js";
+
+type BrowseRow =
+  | { kind: "skill"; key: string; entry: LibraryEntry }
+  | {
+      kind: "source";
+      key: string;
+      source: LibrarySourceGroup;
+      expanded: boolean;
+    };
+function libraryBrowseRows(
+  entries: LibraryEntry[],
+  groups: LibrarySourceGroup[] | undefined,
+  collapsed: Set<string>,
+  forceExpanded: boolean,
+): BrowseRow[] {
+  if (!groups)
+    return entries.map((entry) => ({ kind: "skill", key: entry.name, entry }));
+  return groups.flatMap((source): BrowseRow[] => {
+    const expanded = forceExpanded || !collapsed.has(source.key);
+    return [
+      { kind: "source", key: source.key, source, expanded },
+      ...(expanded
+        ? source.entries.map(
+            (entry): BrowseRow => ({
+              kind: "skill",
+              key: `${source.key}:${entry.name}`,
+              entry,
+            }),
+          )
+        : []),
+    ];
+  });
+}
 
 export interface CommandResult {
   code: number;
@@ -260,7 +296,11 @@ function detailTableRow(
     }),
   );
 }
-function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
+function inspectorLines(
+  entry: LibraryEntry,
+  width: number,
+  diagnostics = false,
+): DetailLine[] {
   const usableWidth = Math.min(112, Math.max(12, width - 2));
   const wide = usableWidth >= 96;
   const columnWidth = wide ? Math.floor((usableWidth - 6) / 2) : usableWidth;
@@ -272,6 +312,73 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       text: `${entry.machines.length} machine${entry.machines.length === 1 ? "" : "s"}, ${entry.occurrences.length} locations`,
       tone: color.muted,
     });
+  const history = librarySessions(entry);
+  const verifiedHistory = librarySessions({
+    ...entry,
+    occurrences: entry.occurrences.map((record) => ({
+      ...record,
+      usageSessions: (record.usageSessions ?? []).filter(
+        (session) => !!session.pathId,
+      ),
+    })),
+  });
+  const durableTotals = entry.usageMachines.flatMap((machine) =>
+    (["codex", "claude", "pi"] as const).map((harness) => {
+      const legacy = verifiedHistory.filter(
+        (session) =>
+          session.machineId === machine.id && session.harness === harness,
+      );
+      return {
+        machine: machine.name,
+        harness,
+        totals: librarySessionTotals(entry, machine.id, harness) ?? {
+          verified: legacy.length,
+          named: 0,
+          lastUsedAt: legacy[0]?.lastUsedAt,
+        },
+      };
+    }),
+  );
+  const latestIndexed = durableTotals
+    .filter((row) => row.totals.lastUsedAt)
+    .sort(
+      (a, b) =>
+        Date.parse(b.totals.lastUsedAt!) - Date.parse(a.totals.lastUsedAt!),
+    )[0];
+  const latest = latestIndexed && {
+    lastUsedAt: latestIndexed.totals.lastUsedAt!,
+    harness: latestIndexed.harness,
+    machine: latestIndexed.machine,
+  };
+  const recordedSessionCount = durableTotals.reduce(
+    (sum, row) => sum + row.totals.verified,
+    0,
+  );
+  content.push(
+    { text: " " },
+    { text: diagnostics ? "Diagnostics" : "Last recorded use", bold: true },
+    ...(latest
+      ? [
+          {
+            text: observedLabel(latest.lastUsedAt),
+            tone: color.good,
+          },
+          {
+            text: `${harnessLabel(latest.harness)} · ${latest.machine} · ${recordedSessionCount} recorded session${recordedSessionCount === 1 ? "" : "s"}`,
+            tone: color.muted,
+          },
+        ]
+      : [
+          {
+            text: "No verified use recorded in available history.",
+            tone: color.muted,
+          },
+        ]),
+    {
+      text: "Recorded history may be incomplete.",
+      tone: color.muted,
+    },
+  );
   const groups = new Map<
     string,
     {
@@ -399,11 +506,11 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       );
     for (const path of [...new Set(paths)])
       installation.push(...field("Checkout", path, columnWidth));
-    if (!paths.length && record.checkoutId)
+    if (diagnostics && !paths.length && record.checkoutId)
       installation.push(
         ...field("Checkout ID", record.checkoutId, columnWidth),
       );
-    if (firstOnMachine)
+    if (diagnostics && firstOnMachine)
       installation.push(
         { text: " " },
         ...field(
@@ -435,7 +542,7 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       record.agents.every((agent) =>
         known.some((variant) => variant.agent === agent),
       );
-    if (uniform && mode !== "unknown" && !declaresAllAvailable)
+    if (diagnostics && uniform && mode !== "unknown" && !declaresAllAvailable)
       behavior.push(
         ...field(
           "Declared for",
@@ -446,6 +553,7 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
       );
     for (const variant of variants.filter(
       (variant) =>
+        (diagnostics || variant.status === "read") &&
         variant.status !== "unsupported" &&
         !(uniform && known.includes(variant)),
     )) {
@@ -469,7 +577,7 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
     const unsupported = variants.filter(
       (variant) => variant.status === "unsupported",
     );
-    if (unsupported.length && record.installed)
+    if (diagnostics && unsupported.length && record.installed)
       behavior.push(
         ...field(
           "Reader missing",
@@ -478,7 +586,7 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
           color.muted,
         ),
       );
-    if (record.installed && !record.metadata)
+    if (diagnostics && record.installed && !record.metadata)
       behavior.push(
         ...field(
           "Not collected",
@@ -489,7 +597,12 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
           color.muted,
         ),
       );
-    else if (record.installed && mode === "unknown" && variants.length === 0)
+    else if (
+      diagnostics &&
+      record.installed &&
+      mode === "unknown" &&
+      variants.length === 0
+    )
       behavior.push(
         ...field(
           "No declaration",
@@ -510,135 +623,149 @@ function inspectorLines(entry: LibraryEntry, width: number): DetailLine[] {
     );
   }
   const summary = sessionUsageSummary(entry);
-  content.push(
-    { text: " " },
-    { text: "Sessions using this skill", bold: true },
-    { text: " " },
-  );
-  if (usableWidth >= 76) {
-    const machineWidth = Math.floor(usableWidth * 0.34);
-    const agentWidth = Math.floor((usableWidth - machineWidth) / 3);
-    const widths = [
-      machineWidth,
-      agentWidth,
-      agentWidth,
-      usableWidth - machineWidth - agentWidth * 2,
-    ];
+  if (diagnostics) {
     content.push(
-      ...detailTableRow(["Machine", "OpenAI", "Claude", "Pi"], widths, true),
+      { text: " " },
+      { text: "Sessions using this skill", bold: true },
       { text: " " },
     );
-    for (const row of summary.rows) {
-      const lines = detailTableRow(
-        [row.machine, ...row.cells.map((cell) => cell.label)],
-        widths,
-      );
-      for (const line of lines)
-        line.cells?.forEach((cell, index) => {
-          cell.tone =
-            index === 0
-              ? color.accent
-              : row.cells[index - 1]!.count > 0
-                ? color.good
-                : color.muted;
-        });
-      content.push(...lines);
-    }
-  } else {
-    for (const row of summary.rows) {
-      content.push({ text: row.machine, tone: color.accent, bold: true });
-      for (const cell of row.cells)
-        content.push(
-          ...field(
-            harnessLabel(cell.agent),
-            cell.label,
-            usableWidth,
-            cell.count > 0 ? color.good : color.muted,
-          ),
-        );
-      content.push({ text: " " });
-    }
-  }
-  content.push({
-    text: "Verified sessions in retained history. Repeated reads count once.",
-    tone: color.muted,
-  });
-  if (
-    summary.rows.some((row) =>
-      row.cells.some((cell) => cell.label === "No install"),
-    )
-  )
-    content.push({
-      text: "No install: no installation matches the current filters.",
-      tone: color.muted,
-    });
-  const history = librarySessions(entry);
-  content.push(
-    { text: " " },
-    { text: "Recent sessions", bold: true },
-    { text: " " },
-  );
-  if (history.length) {
-    if (usableWidth >= 76)
+    if (usableWidth >= 76) {
+      const machineWidth = Math.floor(usableWidth * 0.34);
+      const agentWidth = Math.floor((usableWidth - machineWidth) / 3);
+      const widths = [
+        machineWidth,
+        agentWidth,
+        agentWidth,
+        usableWidth - machineWidth - agentWidth * 2,
+      ];
       content.push(
-        ...detailTableRow(
-          ["Last used (UTC)", "Agent", "Session", "Machine"],
-          [23, 12, 16, usableWidth - 51],
-          true,
-        ),
+        ...detailTableRow(["Machine", "OpenAI", "Claude", "Pi"], widths, true),
         { text: " " },
       );
-    for (const session of history.slice(0, 20)) {
-      const at = new Date(session.lastUsedAt)
-        .toISOString()
-        .slice(0, 19)
-        .replace("T", " ");
-      const label =
-        session.sessionId.slice(0, 8) + (session.pathMatched ? "" : " (name)");
+      for (const row of summary.rows) {
+        const lines = detailTableRow(
+          [row.machine, ...row.cells.map((cell) => cell.label)],
+          widths,
+        );
+        for (const line of lines)
+          line.cells?.forEach((cell, index) => {
+            cell.tone =
+              index === 0
+                ? color.accent
+                : row.cells[index - 1]!.count > 0
+                  ? color.good
+                  : color.muted;
+          });
+        content.push(...lines);
+      }
+    } else {
+      for (const row of summary.rows) {
+        content.push({ text: row.machine, tone: color.accent, bold: true });
+        for (const cell of row.cells)
+          content.push(
+            ...field(
+              harnessLabel(cell.agent),
+              cell.label,
+              usableWidth,
+              cell.count > 0 ? color.good : color.muted,
+            ),
+          );
+        content.push({ text: " " });
+      }
+    }
+    content.push({
+      text: "Verified sessions in retained history. Repeated reads count once.",
+      tone: color.muted,
+    });
+    if (
+      summary.rows.some((row) =>
+        row.cells.some((cell) => cell.label === "No install"),
+      )
+    )
+      content.push({
+        text: "No install: no installation matches the current filters.",
+        tone: color.muted,
+      });
+  }
+  if (history.length || diagnostics) {
+    content.push(
+      { text: " " },
+      { text: "Recent sessions", bold: true },
+      { text: " " },
+    );
+    if (history.length) {
       if (usableWidth >= 76)
         content.push(
           ...detailTableRow(
-            [at, harnessLabel(session.harness), label, session.machine],
+            ["Last used (UTC)", "Agent", "Session", "Machine"],
             [23, 12, 16, usableWidth - 51],
-          ),
-        );
-      else
-        content.push(
-          { text: `${at} UTC`, tone: color.muted },
-          ...field("Machine", session.machine, usableWidth),
-          ...field(
-            harnessLabel(session.harness),
-            `Session ${label}`,
-            usableWidth,
+            true,
           ),
           { text: " " },
         );
-    }
-    if (history.some((session) => !session.pathMatched))
+      for (const session of history.slice(0, diagnostics ? 20 : 5)) {
+        const at = new Date(session.lastUsedAt)
+          .toISOString()
+          .slice(0, 19)
+          .replace("T", " ");
+        const label =
+          session.sessionId.slice(0, 8) +
+          (session.pathMatched ? "" : " (name)");
+        if (usableWidth >= 76)
+          content.push(
+            ...detailTableRow(
+              [at, harnessLabel(session.harness), label, session.machine],
+              [23, 12, 16, usableWidth - 51],
+            ),
+          );
+        else
+          content.push(
+            { text: `${at} UTC`, tone: color.muted },
+            ...field("Machine", session.machine, usableWidth),
+            ...field(
+              harnessLabel(session.harness),
+              `Session ${label}`,
+              usableWidth,
+            ),
+            { text: " " },
+          );
+      }
+      if (history.some((session) => !session.pathMatched))
+        content.push({
+          text: "(name) identifies an invocation without a resolved installation.",
+          tone: color.muted,
+        });
+      if (history.length > (diagnostics ? 20 : 5))
+        content.push({
+          text: `Showing the ${diagnostics ? 20 : 5} most recent recorded sessions.`,
+          tone: color.muted,
+        });
+    } else
       content.push({
-        text: "(name) identifies an invocation without a resolved installation.",
+        text: entry.occurrences.some(
+          (record) => record.sessionCohorts !== undefined,
+        )
+          ? "No session details in the recent-history window."
+          : entry.occurrences.some(
+                (record) => record.usageSessions !== undefined,
+              )
+            ? "No sessions with verified identity in retained evidence."
+            : "Session history not collected. Refresh on the originating machine.",
         tone: color.muted,
       });
-    if (history.length > 20)
-      content.push({
-        text: "Showing the 20 most recent recorded sessions.",
-        tone: color.muted,
-      });
-  } else
-    content.push({
-      text: entry.occurrences.some(
-        (record) => record.usageSessions !== undefined,
-      )
-        ? "No sessions with verified identity in retained evidence."
-        : "Session history not collected. Refresh on the originating machine.",
-      tone: color.muted,
-    });
-  if (entry.occurrences.some((record) => record.sessionsTruncated))
+  }
+  if (
+    diagnostics &&
+    entry.occurrences.some(
+      (record) =>
+        record.sessionsTruncated && record.sessionCohorts === undefined,
+    )
+  )
     content.push({
       text: "Older evidence is omitted; session counts are a lower bound.",
       tone: color.muted,
     });
-  if (summary.notes.length) {
+  if (diagnostics && summary.notes.length) {
     content.push(
       { text: " " },
       { text: "What may be missing", bold: true },
@@ -722,15 +849,17 @@ function Inspector({
   lines,
   width,
   offset,
+  diagnostics,
 }: {
   entry: LibraryEntry | undefined;
   lines: number;
   width: number;
   offset: number;
+  diagnostics: boolean;
 }) {
   if (!entry)
     return <Text dimColor>Select a skill to inspect its installations.</Text>;
-  const wrapped = inspectorLines(entry, width);
+  const wrapped = inspectorLines(entry, width, diagnostics);
   const page = Math.max(1, lines - 1);
   const start = Math.min(offset, Math.max(0, wrapped.length - page));
   return (
@@ -785,8 +914,13 @@ export function SkilloomApp({
   const [machine, setMachine] = useState("all");
   const [scope, setScope] = useState("all");
   const [ownership, setOwnership] = useState("all");
+  const [groupBySource, setGroupBySource] = useState(false);
+  const [collapsedSources, setCollapsedSources] = useState<Set<string>>(
+    new Set(),
+  );
   const [index, setIndex] = useState(0);
   const [details, setDetails] = useState(false);
+  const [detailDiagnostics, setDetailDiagnostics] = useState(false);
   const [installationChecks, setInstallationChecks] = useState(false);
 
   const [enriching, setEnriching] = useState(false);
@@ -914,9 +1048,7 @@ export function SkilloomApp({
                 next.skillUsage?.backfill?.paused &&
                 !inventory.skillUsage?.backfill?.paused
               )
-                setNotice(
-                  "History paused after 2 minutes. Progress saved; r continues.",
-                );
+                setNotice("History paused. Progress saved; r continues.");
               setInventory((current) =>
                 current === inventory ? next : current,
               );
@@ -929,10 +1061,7 @@ export function SkilloomApp({
               );
           });
       },
-      inventory.skillUsage?.backfill?.complete ||
-        inventory.skillUsage?.backfill?.paused
-        ? 30000
-        : 2000,
+      inventory.skillUsage?.backfill?.complete ? 30000 : 2000,
     );
     return () => {
       active = false;
@@ -950,13 +1079,34 @@ export function SkilloomApp({
   const evidenceMachines = (entries[0]?.usageMachines ?? []).filter(
     (item) => machine === "all" || item.id === machine,
   );
-  const selected = rows[Math.min(index, Math.max(0, rows.length - 1))];
+  const sourceGroups = useMemo(
+    () => (groupBySource ? groupLibraryBySource(rows) : undefined),
+    [rows, groupBySource],
+  );
+  const browseRows = useMemo(
+    () =>
+      libraryBrowseRows(
+        rows,
+        sourceGroups,
+        collapsedSources,
+        searching || !!query.trim(),
+      ),
+    [rows, sourceGroups, collapsedSources, searching, query],
+  );
+  const activeRow =
+    browseRows[Math.min(index, Math.max(0, browseRows.length - 1))];
+  const selected = activeRow?.kind === "skill" ? activeRow.entry : undefined;
+  const skillCount = groupBySource
+    ? sourceGroups!.reduce((count, source) => count + source.entries.length, 0)
+    : rows.length;
   useEffect(() => {
-    setIndex((current) => Math.min(current, Math.max(0, rows.length - 1)));
-  }, [rows.length]);
+    setIndex((current) =>
+      Math.min(current, Math.max(0, browseRows.length - 1)),
+    );
+  }, [browseRows.length]);
   useEffect(() => {
     setIndex(0);
-  }, [query, scope, ownership]);
+  }, [query, scope, ownership, groupBySource]);
   const changeMachine = (direction: number) => {
     if (!inventory) return;
     const machines = [
@@ -966,16 +1116,22 @@ export function SkilloomApp({
     const current = Math.max(0, machines.indexOf(machine));
     const next =
       machines[(current + direction + machines.length) % machines.length]!;
-    const nextRows = filterLibrary(entries, {
+    const nextEntries = filterLibrary(entries, {
       query,
       machine: next,
       scope,
       ownership,
     });
+    const nextRows = libraryBrowseRows(
+      nextEntries,
+      groupBySource ? groupLibraryBySource(nextEntries) : undefined,
+      collapsedSources,
+      searching || !!query.trim(),
+    );
     setIndex(
       Math.max(
         0,
-        nextRows.findIndex((row) => row.name === selected?.name),
+        nextRows.findIndex((row) => row.key === activeRow?.key),
       ),
     );
     setMachine(next);
@@ -1005,7 +1161,8 @@ export function SkilloomApp({
   const pageSize = Math.max(1, bodyHeight - 4);
   useEffect(() => {
     setDetailOffset(0);
-  }, [selected?.name]);
+    setDetailDiagnostics(false);
+  }, [activeRow?.key]);
   useEffect(() => {
     setChangeIndex((index) =>
       Math.min(index, inventory?.operations.length ?? 0),
@@ -1433,7 +1590,7 @@ export function SkilloomApp({
         setDetails(false);
         if (key.downArrow)
           setIndex((current) =>
-            Math.min(Math.max(0, rows.length - 1), current + 1),
+            Math.min(Math.max(0, browseRows.length - 1), current + 1),
           );
         if (key.upArrow) setIndex((current) => Math.max(0, current - 1));
         return;
@@ -1620,7 +1777,24 @@ export function SkilloomApp({
         });
       return;
     }
-    if (details && ["m", "g", "o", "x"].includes(input)) return;
+    if (details && ["m", "g", "o", "x", "b"].includes(input)) return;
+    if (input === "b") {
+      setGroupBySource((value) => !value);
+      return;
+    }
+    if (key.return && !details && activeRow?.kind === "source") {
+      if (query.trim()) {
+        setNotice("Clear search with x to collapse source groups.");
+      } else {
+        setCollapsedSources((current) => {
+          const next = new Set(current);
+          if (next.has(activeRow.key)) next.delete(activeRow.key);
+          else next.add(activeRow.key);
+          return next;
+        });
+      }
+      return;
+    }
     if (
       view === "Library" &&
       !details &&
@@ -1663,14 +1837,22 @@ export function SkilloomApp({
       selected
     ) {
       setDetails(true);
+      setDetailDiagnostics(false);
       setDetailOffset(0);
       return;
     }
     if (details) {
+      if (input === "e") {
+        setDetailDiagnostics((value) => !value);
+        setDetailOffset(0);
+        return;
+      }
       const update = setDetailOffset;
       const max = Math.max(
         0,
-        (selected ? inspectorLines(selected, size.width).length : 0) -
+        (selected
+          ? inspectorLines(selected, size.width, detailDiagnostics).length
+          : 0) -
           (bodyHeight - 1),
       );
       if (key.downArrow || input === "j" || key.pageDown)
@@ -1682,13 +1864,13 @@ export function SkilloomApp({
       return;
     }
     if (key.downArrow || input === "j")
-      setIndex(Math.min(Math.max(0, rows.length - 1), index + 1));
+      setIndex(Math.min(Math.max(0, browseRows.length - 1), index + 1));
     if (key.upArrow || input === "k") setIndex(Math.max(0, index - 1));
     if (key.pageDown)
-      setIndex(Math.min(Math.max(0, rows.length - 1), index + pageSize));
+      setIndex(Math.min(Math.max(0, browseRows.length - 1), index + pageSize));
     if (key.pageUp) setIndex(Math.max(0, index - pageSize));
     if (key.home) setIndex(0);
-    if (key.end) setIndex(Math.max(0, rows.length - 1));
+    if (key.end) setIndex(Math.max(0, browseRows.length - 1));
   });
   const offset = Math.floor(Math.max(0, index) / pageSize) * pageSize;
   const selectedMachine =
@@ -1717,16 +1899,21 @@ export function SkilloomApp({
           ? "Enter/Esc results · ↑↓ select"
           : details
             ? selected &&
-              inspectorLines(selected, size.width).length > bodyHeight - 1
-              ? "Esc results · ↑↓ scroll"
-              : "Esc results"
+              inspectorLines(selected, size.width, detailDiagnostics).length >
+                bodyHeight - 1
+              ? `Esc back · ↑↓ scroll · e ${detailDiagnostics ? "hide diagnostics" : "diagnostics"}`
+              : `Esc results · e ${detailDiagnostics ? "hide diagnostics" : "diagnostics"}`
             : view !== "Library"
               ? tiny
                 ? "↑↓ select · Enter open · Esc library"
                 : `↑↓ select   Enter ${view === "Changes" ? "open" : "choose"}   Tab/Shift-Tab views   Esc library`
               : tiny
-                ? "↑↓ select · Enter/i details · / search · ?"
-                : `↑↓ select   Enter/i details   / search   ? help   q quit`;
+                ? activeRow?.kind === "source"
+                  ? "↑↓ select · Enter fold · / search · ?"
+                  : "↑↓ select · Enter/i details · / search · ?"
+                : activeRow?.kind === "source"
+                  ? "↑↓ select   Enter expand/collapse   / search   ? help   q quit"
+                  : `↑↓ select   Enter/i details   / search   ? help   q quit`;
   let content: React.ReactNode;
   if (outcome) {
     const lines = wrapLines(
@@ -1757,6 +1944,7 @@ export function SkilloomApp({
           "←/→ machine · g scope · o ownership",
           "x clear filters · r refresh",
           "s review sync · y apply in review",
+          "b group by Flat / Source · Enter expands source headings",
           "a add · d remove · v verify source",
           "l installation checks on this machine",
           "Details: Esc results · ↑↓ scroll",
@@ -1907,6 +2095,7 @@ export function SkilloomApp({
         lines={bodyHeight}
         width={size.width}
         offset={detailOffset}
+        diagnostics={detailDiagnostics}
       />
     );
   else
@@ -1947,69 +2136,102 @@ export function SkilloomApp({
               <Text dimColor>Press x to clear filters or r to refresh.</Text>
             </Box>
           ) : (
-            rows.slice(offset, offset + pageSize).map((row, i) => (
-              <Box
-                key={row.name}
-                backgroundColor={
-                  offset + i === index ? color.selection : undefined
-                }
-              >
-                <Box width={skillColumnWidth} paddingRight={1}>
-                  <Text
-                    wrap="truncate-end"
-                    {...(offset + i === index
-                      ? { color: color.selectedText }
-                      : {})}
-                    bold={offset + i === index}
+            browseRows.slice(offset, offset + pageSize).map((item, i) => {
+              if (item.kind === "source")
+                return (
+                  <Box
+                    key={item.key}
+                    backgroundColor={
+                      offset + i === index ? color.selection : undefined
+                    }
+                    justifyContent="space-between"
                   >
-                    {offset + i === index ? "› " : "  "}
-                    {safeText(row.name)}
-                  </Text>
-                </Box>
-                <Box width={tiny ? 10 : 12}>
-                  <Text
-                    {...(offset + i === index
-                      ? { color: color.selectedText }
-                      : row.invocation === "unknown" ||
-                          row.invocation === "partial"
-                        ? { color: color.muted }
-                        : {})}
-                    bold={offset + i === index}
-                    wrap="truncate-end"
-                  >
-                    {invocationLabel(row.invocation)}
-                  </Text>
-                </Box>
-                {!tiny && (
-                  <Box width={12}>
                     <Text
+                      bold
                       wrap="truncate-end"
                       color={
-                        offset + i === index
-                          ? color.selectedText
-                          : row.ownership === "External"
-                            ? color.warning
-                            : color.muted
+                        offset + i === index ? color.selectedText : color.accent
                       }
                     >
-                      {row.ownership}
+                      {item.expanded ? "▾" : "▸"} {safeText(item.source.label)}
                     </Text>
-                  </Box>
-                )}
-                {!tiny && (
-                  <Box width={10}>
                     <Text
                       color={
                         offset + i === index ? color.selectedText : color.muted
                       }
-                      bold={offset + i === index}
                     >
-                      {row.machines.length}
+                      {" "}
+                      {item.source.entries.length} skills
                     </Text>
                   </Box>
-                )}
-              </Box>
-            ))
+                );
+              const row = item.entry;
+              return (
+                <Box
+                  key={item.key}
+                  backgroundColor={
+                    offset + i === index ? color.selection : undefined
+                  }
+                >
+                  <Box width={skillColumnWidth} paddingRight={1}>
+                    <Text
+                      wrap="truncate-end"
+                      {...(offset + i === index
+                        ? { color: color.selectedText }
+                        : {})}
+                      bold={offset + i === index}
+                    >
+                      {offset + i === index ? "› " : "  "}
+                      {safeText(row.name)}
+                    </Text>
+                  </Box>
+                  <Box width={tiny ? 10 : 12}>
+                    <Text
+                      {...(offset + i === index
+                        ? { color: color.selectedText }
+                        : row.invocation === "unknown" ||
+                            row.invocation === "partial"
+                          ? { color: color.muted }
+                          : {})}
+                      bold={offset + i === index}
+                      wrap="truncate-end"
+                    >
+                      {invocationLabel(row.invocation)}
+                    </Text>
+                  </Box>
+                  {!tiny && (
+                    <Box width={12}>
+                      <Text
+                        wrap="truncate-end"
+                        color={
+                          offset + i === index
+                            ? color.selectedText
+                            : row.ownership === "External"
+                              ? color.warning
+                              : color.muted
+                        }
+                      >
+                        {row.ownership}
+                      </Text>
+                    </Box>
+                  )}
+                  {!tiny && (
+                    <Box width={10}>
+                      <Text
+                        color={
+                          offset + i === index
+                            ? color.selectedText
+                            : color.muted
+                        }
+                        bold={offset + i === index}
+                      >
+                        {row.machines.length}
+                      </Text>
+                    </Box>
+                  )}
+                </Box>
+              );
+            })
           )}
         </Box>
         {!narrow && (
@@ -2018,11 +2240,26 @@ export function SkilloomApp({
             borderStyle="single"
             borderColor={color.muted}
           >
-            <Preview
-              entry={selected}
-              lines={bodyHeight - 2}
-              width={size.width - Math.floor(size.width * 0.7) - 2}
-            />
+            {activeRow?.kind === "source" ? (
+              <Box paddingX={1} flexDirection="column">
+                <Text bold color={color.accent}>
+                  {safeText(activeRow.source.label)}
+                </Text>
+                <Text> </Text>
+                <Text>{activeRow.source.entries.length} matching skills</Text>
+                <Text color={color.muted}>
+                  {query.trim()
+                    ? "Search keeps matching groups open."
+                    : `Enter to ${activeRow.expanded ? "collapse" : "expand"}`}
+                </Text>
+              </Box>
+            ) : (
+              <Preview
+                entry={selected}
+                lines={bodyHeight - 2}
+                width={size.width - Math.floor(size.width * 0.7) - 2}
+              />
+            )}
           </Box>
         )}
       </Box>
@@ -2070,6 +2307,7 @@ export function SkilloomApp({
               wrap="truncate-end"
               color={searching ? color.accent : color.muted}
             >
+              {`b Group: ${groupBySource ? "By source" : "Flat"} · `}
               {searching ? "Editing search: " : "Search: "}
               {searching
                 ? `${Array.from(query)
@@ -2089,7 +2327,7 @@ export function SkilloomApp({
                 ? `‹ ${safeText(selectedMachine)} ›`
                 : safeText(selectedMachine)}
               {scope === "all" ? "" : ` · ${scope}`}
-              {ownership === "all" ? "" : ` · ${ownership}`} · {rows.length}{" "}
+              {ownership === "all" ? "" : ` · ${ownership}`} · {skillCount}{" "}
               skills
             </Text>
             {!tiny && (

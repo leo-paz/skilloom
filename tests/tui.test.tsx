@@ -33,6 +33,37 @@ const mount = (width = 120, api = backend()) => {
 };
 
 describe("full-screen skill library", () => {
+  it("groups sources, collapses headings, and opens only skill details", async () => {
+    const app = mount(120);
+    await tick();
+    expect(app.lastFrame()).toContain("Flat");
+    app.stdin.write("b");
+    await tick();
+    expect(app.lastFrame()).toContain("acme / review");
+    expect(app.lastFrame()).toContain("Source unknown");
+    app.stdin.write("\r");
+    await tick();
+    expect(app.lastFrame()).not.toContain("Skill details");
+    app.stdin.write("/");
+    await tick();
+    app.stdin.write("code-review");
+    await tick();
+    expect(app.lastFrame()).toContain("code-review");
+    expect(app.lastFrame()).toContain("acme / review");
+    app.stdin.write("\u001b");
+    await tick();
+    app.stdin.write("\u001b[B");
+    await tick();
+    app.stdin.write("i");
+    await tick();
+    expect(app.lastFrame()).toContain("Skill details");
+    app.stdin.write("\u001b");
+    await tick();
+    expect(app.lastFrame()).toContain("acme / review");
+    app.stdin.write("b");
+    await tick();
+    expect(app.lastFrame()).toContain("Flat");
+  });
   it("keeps missing requirements from obscuring an installed copy's invocation", () => {
     const inventory = inventoryFixture();
     inventory.remoteObservations![0]!.globalSkills = [
@@ -75,8 +106,70 @@ describe("full-screen skill library", () => {
     await tick();
     app.stdin.write("i");
     await tick();
+    expect(app.lastFrame()).toContain("Last recorded use");
+    expect(app.lastFrame()).not.toContain("Reader missing");
+    expect(app.lastFrame()).toContain("e diagnostics");
+    app.stdin.write("e");
+    await tick();
+    expect(app.lastFrame()).toContain("Diagnostics");
     expect(app.lastFrame()).toContain("Reader missing");
     expect(app.lastFrame()).toContain("example-agent");
+    app.stdin.write("e");
+    await tick();
+    expect(app.lastFrame()).not.toContain("Reader missing");
+    app.stdin.write("e");
+    await tick();
+    app.stdin.write("\u001b");
+    await tick();
+    app.stdin.write("i");
+    await tick();
+    expect(app.lastFrame()).not.toContain("Reader missing");
+  });
+  it("keeps name-only invocation history separate from verified recent use", async () => {
+    const inventory = inventoryFixture();
+    delete inventory.skillUsage!.sessions![0]!.pathId;
+    const app = render(
+      <SkilloomApp
+        initialInventory={inventory}
+        backend={backend()}
+        width={120}
+        height={40}
+      />,
+    );
+    mounted.push(app);
+    await tick();
+    app.stdin.write("i");
+    await tick();
+    expect(app.lastFrame()).toContain(
+      "No verified use recorded in available history.",
+    );
+    expect(app.lastFrame()).toContain("bbbbbbbb");
+    expect(app.lastFrame()).toContain("(name)");
+    expect(app.lastFrame()).not.toContain("1 recorded session");
+  });
+  it("does not use a newer name-only event as the last verified use", async () => {
+    const inventory = inventoryFixture();
+    const nameOnly = {
+      ...inventory.skillUsage!.sessions![0]!,
+      lastUsedAt: "2026-09-10T18:00:00.000Z",
+    };
+    delete nameOnly.pathId;
+    inventory.skillUsage!.sessions!.push(nameOnly);
+    const app = render(
+      <SkilloomApp
+        initialInventory={inventory}
+        backend={backend()}
+        width={120}
+        height={24}
+      />,
+    );
+    mounted.push(app);
+    await tick();
+    app.stdin.write("i");
+    await tick();
+    expect(app.lastFrame()).toContain("2026-09-08 11:00 UTC");
+    expect(app.lastFrame()).not.toContain("2026-09-10 18:00 UTC");
+    expect(app.lastFrame()).toContain("1 recorded session");
   });
   it("checks this machine from a remote-filtered library and returns to the same search and selection", async () => {
     const api = {
@@ -205,7 +298,12 @@ describe("full-screen skill library", () => {
         app.stdin.write("\u001b[B\u001b[B\u001b[B\u001b[B");
         await tick();
       }
-      expect(app.lastFrame()).toContain("1 session");
+      expect(app.lastFrame()).toContain("1 recorded");
+      app.stdin.write("\u001b[F");
+      await tick();
+      expect(app.lastFrame()).not.toContain("What may be missing");
+      app.stdin.write("e");
+      await tick();
       app.stdin.write("\u001b[F");
       await tick();
       expect(app.lastFrame()).toContain("What may be missing");
@@ -472,7 +570,7 @@ describe("full-screen skill library", () => {
     await tick();
     app.stdin.write("\u001b[F");
     await tick();
-    expect(app.lastFrame()).toContain("What may be missing");
+    expect(app.lastFrame()).toContain("Recent sessions");
     for (
       let page = 0;
       page < 4 && !app.lastFrame()?.includes("remote/source-7");
@@ -483,6 +581,9 @@ describe("full-screen skill library", () => {
     }
     expect(app.lastFrame()).toContain("remote/source-7");
     app.stdin.write("\u001b[H");
+    await tick();
+    expect(app.lastFrame()).toContain("Last recorded use");
+    app.stdin.write("\u001b[B\u001b[B\u001b[B\u001b[B");
     await tick();
     expect(app.lastFrame()).toContain("acme/review");
   });
@@ -601,12 +702,12 @@ describe("full-screen skill library", () => {
     app.stdin.write("\r");
     await tick();
     expect(app.lastFrame()).toContain("Skill details");
-    expect(app.lastFrame()).toContain("Last observed");
+    expect(app.lastFrame()).toContain("Last recorded use");
     app.stdin.write("\u001b");
     await tick();
     app.stdin.write("i");
     await tick();
-    expect(app.lastFrame()).toContain("Last observed");
+    expect(app.lastFrame()).toContain("Last recorded use");
     app.stdin.write("/");
     await tick();
     app.stdin.write("design");

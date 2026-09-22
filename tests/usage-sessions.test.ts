@@ -94,3 +94,37 @@ it("does not let discovery order assign a conflicting event to an arbitrary sess
   expect(groupUsageSessions([a, b])).toEqual([]);
   expect(groupUsageSessions([b, a])).toEqual([]);
 });
+
+it("counts one Library session when the same session has reads from two paths and a name-only invocation", async () => {
+  const { inventoryFixture } = await import("./tui-fixture.js");
+  const { buildLibrary, librarySessions } = await import(
+    "../src/tui/catalog.js"
+  );
+  const inventory = inventoryFixture();
+  const sessions = groupUsageSessions([
+    event({ name: "code-review", pathId: "a".repeat(64) }),
+    event({ id: "d".repeat(64), name: "code-review", pathId: "e".repeat(64) }),
+    event({
+      id: "f".repeat(64),
+      name: "code-review",
+      pathId: undefined,
+      evidence: "invoke",
+      at: "2026-09-10T02:00:00Z",
+    }),
+  ]);
+  // The evidence index retains installation boundaries; the Library counts the
+  // native conversation once, not its three evidence records.
+  expect(sessions).toHaveLength(3);
+  inventory.skillUsage!.sessions = sessions;
+  inventory.remoteObservations = [];
+  const entry = buildLibrary(inventory).find(
+    (row) => row.name === "code-review",
+  )!;
+  const result = librarySessions(entry);
+  expect(result).toHaveLength(1);
+  expect(result[0]).toMatchObject({
+    sessionId: "b".repeat(64),
+    pathMatched: true,
+    lastUsedAt: "2026-09-10T02:00:00Z",
+  });
+});
